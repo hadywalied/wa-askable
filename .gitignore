@@ -1,0 +1,15 @@
+node_modules/
+out/
+dist/
+extracted/
+*.log
+
+# Never commit an archive or WhatsApp credentials. The real workspace lives in
+# app.getPath('userData'), but a dev run may drop one here.
+workspace/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+auth/
+media/
+.env

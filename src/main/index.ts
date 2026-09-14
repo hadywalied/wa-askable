@@ -1,0 +1,294 @@
+import { app, BrowserWindow, net, powerMonitor, session } from 'electron';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { loadConfig } from './config.js';
+import {
+  currentStatus,
+  onStatusChange,
+  reconnectNow,
+  registerIpc,
+  resumeLastWorkspace,
+  shutdownRuntime,
+} from './ipc.js';
+import { createTray, destroyTray, hasTray, trayState, updateTray, type TrayHooks } from './tray.js';
+import { applyAutostart, getSettings } from './settings.js';
+
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+
+/**
+ * Phase 2: tray-resident.
+ *
+ * The premise of the whole app is that messages arrive by push while linked and
+ * there is no backfill — whatever happens while we are not running is lost
+ * permanently. So the app must keep running with no window, start at login, and
+ * say loudly when it has stopped capturing. Closing the window hides it.
+ */
+
+// Two processes on one SQLite WAL and one auth/ directory is corruption plus a
+// possible WhatsApp unlink.
+const gotLock = app.requestSingleInstanceLock();
+if (!gotLock) app.quit();
+
+let mainWindow: BrowserWindow | null = null;
+let isQuitting = false;
+/** Autostart passes --hidden so login does not throw a window in your face. */
+const startHidden = process.argv.includes('--hidden');
+
+function showWindow(): void {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    createWindow(true);
+    return;
+  }
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+}
+
+const hooks: TrayHooks = {
+  showWindow,
+  quit: () => {
+    isQuitting = true;
+    app.quit();
+  },
+};
+
+function createWindow(show = true): void {
+  const win = new BrowserWindow({
+    width: 1100,
+    height: 800,
+    show: false,
+    title: 'wa-askable',
+    webPreferences: {
+      preload: path.join(HERE, '../preload/index.cjs'),
+      // The renderer holds other people's private messages. It gets no Node,
+      // an isolated context, and a sandbox. The only surface it sees is the
+      // contextBridge in preload/index.ts.
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+    },
+  });
+  mainWindow = win;
+
+  win.once('ready-to-show', () => {
+    if (show) win.show();
+  });
+
+  // Closing hides. Quitting is a deliberate act from the tray menu, because
+  // quitting means the archive stops recording and nothing fills the gap later.
+  win.on('close', (e) => {
+    if (isQuitting) return;
+    e.preventDefault();
+    win.hide();
+  });
+
+  win.on('closed', () => {
+    if (mainWindow === win) mainWindow = null;
+  });
+
+  // Renderer errors are otherwise invisible from the terminal, and the renderer
+  // is where most of this app's behaviour lives. Positional args were deprecated
+  // in Electron 35 in favour of this details object.
+  win.webContents.on('console-message', ({ level, message, lineNumber, sourceId }) => {
+    if (level === 'error' || level === 'warning') {
+      console.error(`[renderer:${level}] ${message} (${sourceId}:${lineNumber})`);
+    }
+  });
+
+  // Headless self-test: drives the real contextBridge from inside the renderer
+  // and exits non-zero if anything is unreachable. Used by `bun run smoke` and,
+  // later, CI — an IPC channel that silently stops resolving is otherwise only
+  // noticed by a human clicking around.
+  //
+  // Hooked to did-finish-load, NOT ready-to-show: those are independent Chromium
+  // callbacks with no guaranteed ordering, and ready-to-show fires on first
+  // non-empty paint, which races the page's own async boot.
+  if (process.env.WA_SMOKE === 'lifecycle') {
+    win.webContents.once('did-finish-load', () => void runLifecycleTest(win));
+  } else if (process.env.WA_SMOKE) {
+    win.webContents.once('did-finish-load', () => void runSmokeTest(win));
+  }
+
+  if (process.env.ELECTRON_RENDERER_URL) {
+    void win.loadURL(process.env.ELECTRON_RENDERER_URL);
+  } else {
+    void win.loadFile(path.join(HERE, '../renderer/index.html'));
+  }
+}
+
+/**
+ * net.online is a property, not an event — Chromium exposes no network-change
+ * signal to the main process. So poll it, but only while we are not connected,
+ * and only to catch the false -> true edge. Without this, coming back from a
+ * dead network waits out the backoff, up to five minutes of lost messages.
+ */
+function watchNetwork(): void {
+  let wasOnline = net.online;
+  setInterval(() => {
+    const online = net.online;
+    if (online && !wasOnline) reconnectNow();
+    wasOnline = online;
+  }, 15_000).unref();
+}
+
+/**
+ * Phase 2's actual contract: closing the window must NOT quit the app, because
+ * quitting stops capture and nothing backfills the gap. Asserted here rather
+ * than left to a human remembering to click the X.
+ */
+async function runLifecycleTest(win: BrowserWindow): Promise<void> {
+  const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  const out: Record<string, unknown> = {};
+  try {
+    out.trayCreated = hasTray();
+    out.trayState = trayState();
+
+    win.close();
+    await wait(600);
+
+    out.appStillRunning = !app.isReady() ? false : true;
+    out.windowDestroyed = win.isDestroyed();
+    out.windowVisible = win.isDestroyed() ? null : win.isVisible();
+    out.windowCount = BrowserWindow.getAllWindows().length;
+
+    // Reopening from the tray must bring the same window back.
+    showWindow();
+    await wait(400);
+    out.reopened = mainWindow !== null && !mainWindow.isDestroyed() && mainWindow.isVisible();
+
+    out.settings = getSettings();
+
+    const ok =
+      out.trayCreated === true &&
+      out.windowDestroyed === false &&
+      out.windowVisible === false &&
+      out.reopened === true;
+    console.log(ok ? '[lifecycle] OK' : '[lifecycle] FAILED', JSON.stringify(out));
+    if (!ok) {
+      isQuitting = true;
+      app.exit(1);
+      return;
+    }
+    // Exercise the real quit path rather than app.exit(): before-quit has to
+    // close the Baileys socket and let SQLite checkpoint its WAL, and a hang
+    // there would strand the process in the tray forever.
+    const watchdog = setTimeout(() => {
+      console.error('[lifecycle] FAILED — graceful quit hung');
+      app.exit(1);
+    }, 8_000);
+    app.once('quit', () => clearTimeout(watchdog));
+    hooks.quit();
+  } catch (err) {
+    console.error('[lifecycle] FAILED', err, JSON.stringify(out));
+    isQuitting = true;
+    app.exit(1);
+  }
+}
+
+async function runSmokeTest(win: BrowserWindow): Promise<void> {
+  const script = `(async () => {
+    const out = { bridge: typeof window.wa };
+    // The page's boot IIFE is async and resolves after load; wait for it rather
+    // than sampling a half-painted UI.
+    for (let i = 0; i < 100 && document.getElementById('mode').textContent === 'checking…'; i++) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    out.session = await window.wa.getSession();
+    const opened = await window.wa.openWorkspace('');
+    out.workspace = opened.workspace;
+    out.stats = opened.stats;
+    out.warnings = opened.warnings.length;
+    out.status = (await window.wa.getStatus()).connection.state;
+    out.chats = (await window.wa.listChats()).chats.length;
+    out.hits = (await window.wa.search({ query: '' })).hits.length;
+    // Errors thrown in main must surface as rejections here, not hang.
+    out.askError = await window.wa.ask('test').then(() => 'NO ERROR', (e) => e.message.slice(0, 70));
+    // The sandbox must hold: no require, no process, no raw ipcRenderer.
+    out.leaks = [
+      typeof window.require,
+      typeof window.process,
+      typeof window.ipcRenderer,
+    ].join(',');
+    // Proves the page's own boot IIFE ran against the bridge, not just the
+    // calls this test makes directly.
+    out.modeText = document.getElementById('mode').textContent;
+    out.wsPath = document.getElementById('wsPath').value;
+    return JSON.stringify(out);
+  })()`;
+  try {
+    const raw = (await win.webContents.executeJavaScript(script)) as string;
+    console.log('[smoke] OK', raw);
+    app.exit(0);
+  } catch (err) {
+    console.error('[smoke] FAILED', err);
+    app.exit(1);
+  }
+}
+
+if (gotLock) {
+  // A second launch (clicking the icon again, or the login item firing twice)
+  // surfaces the running instance instead of starting a rival one.
+  app.on('second-instance', showWindow);
+
+  void app.whenReady().then(async () => {
+    // Carried over from the old server/security.ts. The HTTP server is gone, but
+    // a strict CSP still costs nothing and stops an injected string — and every
+    // string in this database was written by someone else — from phoning home.
+    session.defaultSession.webRequest.onHeadersReceived((details, cb) => {
+      cb({
+        responseHeaders: {
+          ...details.responseHeaders,
+          'Content-Security-Policy': [
+            "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; " +
+              "connect-src 'self'; base-uri 'none'; form-action 'none'",
+          ],
+        },
+      });
+    });
+
+    const cfg = loadConfig();
+    registerIpc(cfg);
+
+    createTray(hooks);
+    onStatusChange((s) => updateTray(s, hooks));
+    updateTray(currentStatus(), hooks);
+
+    // Honour the stored preference on every launch: an OS update or a profile
+    // move can quietly drop the login item.
+    applyAutostart(getSettings().openAtLogin);
+
+    // Wake and screen-unlock are the moments a laptop is most likely to have a
+    // working network again after hours of backoff.
+    powerMonitor.on('resume', reconnectNow);
+    powerMonitor.on('unlock-screen', reconnectNow);
+    watchNetwork();
+
+    createWindow(!startHidden);
+
+    // Resume capture without waiting for anyone to click anything.
+    const resumed = await resumeLastWorkspace(cfg);
+    if (resumed) updateTray(currentStatus(), hooks);
+
+    app.on('activate', showWindow);
+  });
+}
+
+// Closing the last window must NOT quit — that is the whole point of Phase 2.
+app.on('window-all-closed', () => {
+  /* intentionally empty: the tray keeps the app alive */
+});
+
+// Close the socket and let SQLite checkpoint its WAL rather than being killed
+// mid-write. The flag makes the second quit (the one we issue ourselves once
+// shutdown finishes) fall straight through.
+let shuttingDown = false;
+app.on('before-quit', (e) => {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  isQuitting = true;
+  e.preventDefault();
+  void shutdownRuntime().finally(() => {
+    destroyTray();
+    app.quit();
+  });
+});

@@ -1,0 +1,38 @@
+{
+  "name": "wa-askable",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A local archive of your WhatsApp, and a way to ask it questions.",
+  "main": "out/main/index.js",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "electron-vite dev",
+    "start": "electron-vite preview",
+    "build": "electron-vite build",
+    "rebuild": "electron-rebuild -f -m . -w better-sqlite3",
+    "postinstall": "node node_modules/electron/install.js && electron-rebuild -f -m . -w better-sqlite3",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "bun test test/",
+    "setup": "node node_modules/electron/install.js && electron-rebuild -f -m . -w better-sqlite3",
+    "smoke": "electron-vite build && WA_SMOKE=1 electron out/main/index.js",
+    "smoke:lifecycle": "electron-vite build && WA_SMOKE=lifecycle electron out/main/index.js"
+  },
+  "trustedDependencies": [
+    "better-sqlite3",
+    "electron"
+  ],
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.30.1",
+    "@whiskeysockets/baileys": "^6.7.9",
+    "better-sqlite3": "^13.0.3",
+    "pino": "^9.4.0",
+    "qrcode": "^1.5.4"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.11",
+    "@types/qrcode": "^1.5.5"
+  }
+}
