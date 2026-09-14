@@ -38,10 +38,17 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bun run setup
 
+      # electron-builder is invoked directly rather than through `bun run dist:x --`:
+      # bun forwards the `--` separator itself, electron-builder then reads the
+      # leftovers as positional file paths and dies with "<cwd> not a file".
+      # Linux and Windows tolerated it; macOS did not.
+      #
       # --publish never: this workflow proves the installers build, it does not
       # ship them. release.yml is the only thing that uploads.
       - name: build installers
-        run: bun run dist:${{ matrix.platform }} -- --publish never
+        run: |
+          bun run build
+          npx electron-builder --${{ matrix.platform }} --publish never
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Signing runs only when the secrets exist, so forks and unsigned local

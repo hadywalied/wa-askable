@@ -46,8 +46,11 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bun run setup
 
+      # Invoked directly, not via `bun run dist:x --` — see build.yml.
       - name: build and publish installers
-        run: bun run dist:${{ matrix.platform }} -- --publish always
+        run: |
+          bun run build
+          npx electron-builder --${{ matrix.platform }} --publish always
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Signing is applied only when these exist. Without them the artifacts
