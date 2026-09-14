@@ -284,6 +284,60 @@
           <div><b id="lDedup">—</b><span>dedup ratio</span></div>
         </div>
         <p class="hint" id="wsRange"></p>
+
+        <h3 style="margin-top:28px">Get more messages</h3>
+        <p class="hint">
+          WhatsApp's first push is deliberately small. This asks your phone for messages older
+          than the oldest one here. It is a request, not a guarantee — WhatsApp decides how much
+          to hand over, and eventually returns nothing because the phone has no more to give.
+        </p>
+        <div class="ob-actions left">
+          <button id="fetchOlder" class="primary">Request older messages</button>
+        </div>
+        <p class="hint" id="fetchOlderOut"></p>
+
+        <h3 style="margin-top:28px">Storage</h3>
+        <div class="stat-row" id="usageRow"></div>
+        <div class="ob-actions left">
+          <button id="wsCompact" class="ghost">Compact database</button>
+          <button id="wsRefreshUsage" class="ghost">Recalculate</button>
+        </div>
+
+        <h3 style="margin-top:28px">Clearing</h3>
+        <div class="control-grid">
+          <div>
+            <button id="wsClearMedia" class="ghost">Delete downloaded media</button>
+            <p class="hint">Removes the files, keeps every message. Usually the right first move
+              when space is short — the files are the bulk, the text is the value.</p>
+          </div>
+          <div>
+            <button id="wsClearConvs" class="ghost">Delete saved Ask conversations</button>
+            <p class="hint">Forgets your question history. The archive is untouched.</p>
+          </div>
+          <div>
+            <button id="wsReindex" class="ghost">Re-index everything</button>
+            <p class="hint">Queues every message for transliteration and glossing again. Worth it
+              after changing model or provider; costs a full re-run.</p>
+          </div>
+          <div>
+            <label for="olderThan">Delete messages older than</label>
+            <div class="row narrow">
+              <select id="olderThan">
+                <option value="30">30 days</option>
+                <option value="90">90 days</option>
+                <option value="180">6 months</option>
+                <option value="365">1 year</option>
+              </select>
+              <button id="wsDeleteOlder" class="ghost danger">Delete</button>
+            </div>
+          </div>
+          <div>
+            <button id="wsReset" class="ghost danger">Empty the archive</button>
+            <p class="hint">Deletes every message, chat, contact and media file. Your WhatsApp
+              link is kept — unlinking is a separate action in Connection.</p>
+          </div>
+        </div>
+        <p class="hint" id="wsMaintOut"></p>
       </div>
 
       <div class="pane" data-pane="indexing" hidden>

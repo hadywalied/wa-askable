@@ -325,6 +325,27 @@ async function runSmokeTest(win: BrowserWindow): Promise<void> {
     out.controls = ['ctlPause', 'ctlRefresh', 'ctlUnlink'].every((id) => Boolean($(id)));
     out.indexControls = ['refresh', 'retryFailed', 'stopIndex'].every((id) => Boolean($(id)));
 
+    // --- workspace maintenance -----------------------------------------
+    const usage = await window.wa.usage();
+    out.usageShape = ['dbBytes', 'mediaBytes', 'messages', 'contacts', 'conversations']
+      .every((k) => typeof usage[k] === 'number');
+
+    // Exercised against the isolated test workspace, never real data.
+    const cv = await window.wa.newConversation();
+    out.clearedConvs = (await window.wa.clearConversations()).conversations >= 1 && Boolean(cv.id);
+    out.clearedMedia = typeof (await window.wa.clearMedia()).files === 'number';
+    out.reindexed = typeof (await window.wa.reindexAll()).queued === 'number';
+    out.deletedOlder = typeof (await window.wa.deleteOlderThan(Date.now())).messages === 'number';
+    out.reset = typeof (await window.wa.resetArchive()).messages === 'number';
+    out.compacted = (await window.wa.compact()).ok === true;
+
+    // Not connected in the harness, so this must decline cleanly rather than throw.
+    const older = await window.wa.fetchOlder(10);
+    out.fetchOlderDeclines = older.requested === false && typeof older.reason === 'string';
+
+    out.wsButtons = ['fetchOlder', 'wsClearMedia', 'wsClearConvs', 'wsReindex', 'wsDeleteOlder', 'wsReset', 'wsCompact']
+      .every((id) => Boolean($(id)));
+
     // People must be resolvable by name and by number, or a question naming
     // someone cannot be answered at all.
     out.findPeople = (await window.wa.search({ query: '' })).hits.length >= 0;

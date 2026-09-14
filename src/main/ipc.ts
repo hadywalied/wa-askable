@@ -14,6 +14,16 @@ import {
   type DB,
 } from '../core/db.js';
 import { WhatsAppArchive } from '../core/whatsapp.js';
+import {
+  clearConversations,
+  clearMedia,
+  compact,
+  deleteChat,
+  deleteOlderThan,
+  reindexAll,
+  resetArchive,
+  workspaceUsage,
+} from '../core/maintenance.js';
 import { Enricher, ask } from '../core/enrich.js';
 import { listChats, searchMessages } from '../core/search.js';
 import { shell } from 'electron';
@@ -372,6 +382,68 @@ export function registerIpc(initial: Config): void {
     broadcast(EVENTS.stats, s);
     return { ...result, retried, stats: s };
   });
+
+  // --- workspace maintenance ----------------------------------------------
+  // Each one narrow and explicit. A single "clean up" button whose blast radius
+  // nobody can predict is the shape to avoid here.
+
+  ipcMain.handle(CHANNELS.wsUsage, async () => {
+    const rt2 = need();
+    return workspaceUsage(rt2.db, rt2.ws.dbPath, rt2.ws.mediaDir);
+  });
+
+  ipcMain.handle(CHANNELS.wsClearMedia, async () => {
+    const rt2 = need();
+    const r = await clearMedia(rt2.db, rt2.ws.mediaDir);
+    log('ws', `cleared media: ${r.files} files`);
+    broadcast(EVENTS.stats, stats(rt2.db));
+    return r;
+  });
+
+  ipcMain.handle(CHANNELS.wsClearConversations, () => {
+    const r = clearConversations(need().db);
+    log('ws', `cleared ${r.conversations} saved conversations`);
+    return r;
+  });
+
+  ipcMain.handle(CHANNELS.wsReindex, () => {
+    const r = reindexAll(need().db);
+    log('ws', `queued ${r.queued} messages for re-enrichment`);
+    broadcast(EVENTS.stats, stats(need().db));
+    return r;
+  });
+
+  ipcMain.handle(CHANNELS.wsDeleteOlder, (_e, cutoffMs: number) => {
+    const r = deleteOlderThan(need().db, cutoffMs);
+    log('ws', `deleted ${r.messages} messages older than ${new Date(cutoffMs).toISOString()}`);
+    broadcast(EVENTS.stats, stats(need().db));
+    return r;
+  });
+
+  ipcMain.handle(CHANNELS.wsDeleteChat, (_e, chatJid: string) => {
+    const r = deleteChat(need().db, chatJid);
+    log('ws', `deleted chat ${chatJid} (${r.messages} messages)`);
+    broadcast(EVENTS.stats, stats(need().db));
+    return r;
+  });
+
+  ipcMain.handle(CHANNELS.wsReset, async () => {
+    const rt2 = need();
+    const r = await resetArchive(rt2.db, rt2.ws.mediaDir);
+    log('ws', `archive reset: ${r.messages} messages removed (session kept)`);
+    broadcast(EVENTS.stats, stats(rt2.db));
+    return r;
+  });
+
+  ipcMain.handle(CHANNELS.wsCompact, () => {
+    compact(need().db);
+    log('ws', 'database compacted');
+    return { ok: true };
+  });
+
+  ipcMain.handle(CHANNELS.waFetchOlder, async (_e, count?: number, chatJid?: string) =>
+    need().wa.fetchOlderMessages(count ?? 50, chatJid),
+  );
 
   ipcMain.handle(CHANNELS.indexStop, () => {
     need().enricher.stop();

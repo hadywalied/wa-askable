@@ -266,6 +266,51 @@ export class WhatsAppArchive extends EventEmitter {
     this.sock = null;
   }
 
+  /**
+   * Ask the phone for messages older than the oldest we hold.
+   *
+   * WhatsApp's initial push is deliberately small. This is the on-demand sync
+   * the mobile app uses itself: it hands the phone the oldest message we have
+   * and asks for what came before. The results arrive asynchronously through
+   * messaging-history.set, exactly like the first import.
+   *
+   * It is a request, not a command. WhatsApp decides how much to give and can
+   * return nothing at all — typically once it has handed over everything the
+   * phone still holds. The caller must not present it as a guarantee.
+   */
+  async fetchOlderMessages(count = 50, chatJid?: string): Promise<{ requested: boolean; reason?: string }> {
+    if (!this.sock) return { requested: false, reason: 'Not connected.' };
+    if (this.status.state !== 'open') return { requested: false, reason: 'Not linked yet.' };
+
+    const oldest = this.db
+      .prepare(
+        `SELECT id, chat_jid AS chatJid, ts, from_me AS fromMe
+           FROM messages ${chatJid ? 'WHERE chat_jid = ?' : ''}
+          ORDER BY ts ASC LIMIT 1`,
+      )
+      .get(...(chatJid ? [chatJid] : [])) as
+      | { id: string; chatJid: string; ts: number; fromMe: number }
+      | undefined;
+
+    if (!oldest) {
+      return { requested: false, reason: 'Nothing captured yet to reach back from.' };
+    }
+
+    // Our row id is "<chatJid>:<whatsappId>"; the key needs the raw id back.
+    const waId = oldest.id.slice(oldest.chatJid.length + 1);
+    try {
+      await this.sock.fetchMessageHistory(
+        count,
+        { remoteJid: oldest.chatJid, id: waId, fromMe: oldest.fromMe === 1 },
+        Math.floor(oldest.ts / 1000),
+      );
+      this.emit('log', `requested ${count} messages older than ${new Date(oldest.ts).toISOString()}`);
+      return { requested: true };
+    } catch (err) {
+      return { requested: false, reason: describeError(err) };
+    }
+  }
+
   /** Link with an 8-character code typed into the phone instead of a QR scan. */
   async requestPairingCode(phoneNumber: string): Promise<string> {
     const digits = phoneNumber.replace(/[^0-9]/g, '');

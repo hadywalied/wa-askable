@@ -56,6 +56,20 @@ const api = {
   refresh: (opts?: { retryFailed?: boolean }): Promise<RefreshResult> =>
     invoke(CHANNELS.refreshRun, opts),
   stopIndexing: (): Promise<{ ok: boolean }> => invoke(CHANNELS.indexStop),
+
+  usage: (): Promise<Record<string, number | null>> => invoke(CHANNELS.wsUsage),
+  clearMedia: (): Promise<{ files: number }> => invoke(CHANNELS.wsClearMedia),
+  clearConversations: (): Promise<{ conversations: number }> =>
+    invoke(CHANNELS.wsClearConversations),
+  reindexAll: (): Promise<{ queued: number }> => invoke(CHANNELS.wsReindex),
+  deleteOlderThan: (cutoffMs: number): Promise<{ messages: number; chats: number }> =>
+    invoke(CHANNELS.wsDeleteOlder, cutoffMs),
+  deleteChat: (chatJid: string): Promise<{ messages: number }> =>
+    invoke(CHANNELS.wsDeleteChat, chatJid),
+  resetArchive: (): Promise<{ messages: number }> => invoke(CHANNELS.wsReset),
+  compact: (): Promise<{ ok: boolean }> => invoke(CHANNELS.wsCompact),
+  fetchOlder: (count?: number, chatJid?: string): Promise<{ requested: boolean; reason?: string }> =>
+    invoke(CHANNELS.waFetchOlder, count, chatJid),
   onIndexProgress: (cb: (p: { done: number; total: number }) => void): void => {
     ipcRenderer.on(EVENTS.indexProgress, (_event, payload) => cb(payload));
   },

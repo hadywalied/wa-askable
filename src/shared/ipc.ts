@@ -32,6 +32,15 @@ export const CHANNELS = {
   whatsappRefresh: 'whatsapp:refresh',
   whatsappUnlink: 'whatsapp:unlink',
   indexStop: 'index:stop',
+  wsUsage: 'ws:usage',
+  wsClearMedia: 'ws:clear-media',
+  wsClearConversations: 'ws:clear-conversations',
+  wsReindex: 'ws:reindex',
+  wsDeleteOlder: 'ws:delete-older',
+  wsDeleteChat: 'ws:delete-chat',
+  wsReset: 'ws:reset',
+  wsCompact: 'ws:compact',
+  waFetchOlder: 'wa:fetch-older',
 } as const;
 
 /** Pushed from main; the renderer no longer polls. */

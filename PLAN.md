@@ -1285,3 +1285,44 @@ configuration follows; point the app at a different archive and you are not sile
 to the previous one's provider.
 
 The pre-0.5 `userData/secret.bin` (bare key) is read as a fallback and migrated on first write.
+
+---
+
+## 24. v0.6.0 — workspace control
+
+### 24.1 Getting older messages is actually possible
+
+Baileys exposes `fetchMessageHistory(count, oldestMsgKey, oldestMsgTimestamp)` — WhatsApp's
+on-demand history sync, the same mechanism the mobile app uses. Hand it the oldest message we
+hold and the phone pushes what came before, arriving through `messaging-history.set` like the
+first import.
+
+It is **a request, not a command**: WhatsApp decides how much to give and eventually returns
+nothing because the phone has no more. The UI says exactly that rather than implying a guarantee,
+because a button that silently does nothing is indistinguishable from a broken one — which this
+project has now proved twice.
+
+Reconstructing the key needed care: rows are stored as `<chatJid>:<whatsappId>`, so the raw id has
+to be sliced back out rather than split on ':' (JIDs contain them).
+
+### 24.2 Clearing, in narrow pieces
+
+One "clean up" button whose blast radius nobody can predict is the shape to avoid. Each operation
+is separate, confirms, and reports what it removed:
+
+| | |
+|---|---|
+| Delete downloaded media | keeps every message — the files are the bulk, the text is the value |
+| Delete saved Ask conversations | archive untouched |
+| Re-index everything | after a model/provider change; costs a full re-run |
+| Delete messages older than N | 30/90/180/365 days, plus chats left empty |
+| Empty the archive | everything except the WhatsApp link |
+| Compact database | SQLite does not shrink on its own after deletions |
+
+`resetArchive` deliberately does **not** touch `auth/`: someone clearing their data almost never
+means "and make me scan a QR again". Unlinking stays its own action in Connection.
+
+### 24.3 Storage visibility
+
+Real numbers — database bytes (including `-wal`/`-shm`), media bytes and file count, messages,
+people, saved conversations. Without them "clear media" is a guess about whether it will help.

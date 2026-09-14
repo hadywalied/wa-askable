@@ -50,6 +50,7 @@ function openPane(name) {
 $('settingsNav').addEventListener('click', (e) => {
   const pane = e.target.closest('[data-pane]')?.dataset.pane;
   if (pane) openPane(pane);
+  if (pane === 'workspace') void paintUsage();
 });
 
 // ---------------------------------------------------------------- painting
@@ -516,6 +517,89 @@ $('stopIndex').onclick = () => wa.stopIndexing();
 wa.onIndexProgress((p) => {
   $('refreshOut').textContent = `Indexing… ${fmt(p.done)} of ${fmt(p.total)}`;
 });
+
+// --- workspace maintenance ----------------------------------------------
+
+const mb = (b) => (b >= 1048576 ? `${(b / 1048576).toFixed(1)} MB` : `${Math.round(b / 1024)} KB`);
+
+async function paintUsage() {
+  try {
+    const u = await wa.usage();
+    state.usage = u;
+    $('usageRow').innerHTML = [
+      [mb(u.dbBytes), 'database'],
+      [mb(u.mediaBytes), `media (${fmt(u.mediaFiles)} files)`],
+      [fmt(u.messages), 'messages'],
+      [fmt(u.contacts), 'people'],
+      [fmt(u.conversations), 'saved chats'],
+    ].map(([v, l]) => `<div><b>${v}</b><span>${l}</span></div>`).join('');
+  } catch { /* no workspace open yet */ }
+}
+
+/** Every destructive action confirms, reports what it removed, then refreshes. */
+async function maintain(label, confirmText, fn) {
+  if (confirmText && !confirm(confirmText)) return;
+  $('wsMaintOut').textContent = `${label}…`;
+  try {
+    const r = await fn();
+    $('wsMaintOut').textContent = typeof r === 'string' ? r : `${label}: done.`;
+    await paintUsage();
+    await loadChats();
+    await loadConversations();
+  } catch (e) {
+    $('wsMaintOut').textContent = e.message;
+  }
+}
+
+$('wsRefreshUsage').onclick = paintUsage;
+$('wsCompact').onclick = () =>
+  maintain('Compacting', null, async () => { await wa.compact(); return 'Database compacted.'; });
+
+$('wsClearMedia').onclick = () =>
+  maintain('Deleting media',
+    'Delete all downloaded media?\n\nMessages are kept and stay searchable. The files cannot be recovered.',
+    async () => `Deleted ${fmt((await wa.clearMedia()).files)} media files.`);
+
+$('wsClearConvs').onclick = () =>
+  maintain('Clearing conversations',
+    'Delete every saved Ask conversation?\n\nYour archive of messages is not touched.',
+    async () => `Deleted ${fmt((await wa.clearConversations()).conversations)} conversations.`);
+
+$('wsReindex').onclick = () =>
+  maintain('Queueing',
+    'Re-index every message?\n\nThis re-runs transliteration and glossing for the whole archive and will use your AI provider.',
+    async () => `${fmt((await wa.reindexAll()).queued)} messages queued. Run Refresh index to process them.`);
+
+$('wsDeleteOlder').onclick = () => {
+  const days = Number($('olderThan').value);
+  const cutoff = Date.now() - days * 86400000;
+  return maintain('Deleting',
+    `Delete every message older than ${days} days?\n\nThis cannot be undone.`,
+    async () => {
+      const r = await wa.deleteOlderThan(cutoff);
+      return `Deleted ${fmt(r.messages)} messages and ${fmt(r.chats)} empty chats.`;
+    });
+};
+
+$('wsReset').onclick = () =>
+  maintain('Emptying archive',
+    'Delete EVERYTHING in this archive?\n\nEvery message, chat, contact and media file is removed. Your WhatsApp link is kept. This cannot be undone.',
+    async () => `Archive emptied — ${fmt((await wa.resetArchive()).messages)} messages removed.`);
+
+$('fetchOlder').onclick = async () => {
+  $('fetchOlder').disabled = true;
+  $('fetchOlderOut').textContent = 'Asking your phone for older messages…';
+  try {
+    const r = await wa.fetchOlder(50);
+    // Honest wording: this is a request, and a silent no is a normal outcome.
+    $('fetchOlderOut').textContent = r.requested
+      ? 'Requested. Anything WhatsApp sends will appear over the next few moments — if nothing arrives, your phone has no more to give.'
+      : r.reason || 'Could not request older messages.';
+  } catch (e) {
+    $('fetchOlderOut').textContent = e.message;
+  }
+  $('fetchOlder').disabled = false;
+};
 
 $('openLogs').onclick = () => wa.openLogs();
 $('copyDiag').onclick = async () => {
