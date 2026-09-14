@@ -978,3 +978,57 @@ With the fix, connect reaches the WhatsApp handshake and then closes with code 4
 (`connectionClosed` — transient per Baileys' docs). Reproduced in plain Node with no Electron, so
 it is environmental: almost certainly WSL2's NAT breaking the WebSocket. **Whether a QR renders
 on real hardware is still unproven** — that needs a Windows or macOS run.
+
+---
+
+## 19. v0.2.0 — two wire protocols, provider presets, and a settings page
+
+### 19.1 Why this was not just "add a base URL"
+
+v0.1.1 let you set a base URL, but the client was still the Anthropic SDK. Pointing it at Cohere
+returns 404s: Cohere's compatibility endpoint is **OpenAI-shaped**. Base URL alone is a
+half-feature — the protocol has to be configurable too.
+
+### 19.2 `src/core/provider.ts` — one interface, two protocols
+
+The two shapes differ in more than field names. Tool results are a **user** message carrying
+`tool_result` blocks in Anthropic's protocol, and a distinct `role: 'tool'` message in OpenAI's;
+Anthropic's consecutive results must be **merged into a single user message** or the API rejects
+them. Tool schemas are `input_schema` vs `function.parameters`. Arguments arrive as a parsed
+object vs a JSON **string**.
+
+The agent loop should not know any of that, so `enrich.ts` now speaks neutral `ChatMessage` /
+`ToolCall` / `ToolSpec` shapes and each adapter translates. Both the gloss worker and `ask()` went
+through the same interface — doing only one would have left half the pipeline pinned to Anthropic.
+
+Small robustness note: smaller models emit malformed JSON in tool arguments. A bad call degrades
+to an empty input rather than throwing out of the agent loop.
+
+### 19.3 Presets are data, not code paths
+
+`src/shared/providers.ts` is a list of `(kind, baseUrl, suggestedModel, needsKey)`. Nothing is
+special-cased, so **"bring your own" is the same machinery as a built-in** and adding a provider is
+one list entry. The renderer receives the catalogue over IPC rather than duplicating it.
+
+Selecting a preset applies its endpoint and protocol but deliberately **leaves the model and key
+alone** — silently discarding a key the user just pasted would be hostile. Only `custom` may edit
+the protocol and URL; a preset whose URL you can edit has quietly stopped being that preset.
+
+### 19.4 Tested against the wire, not just the types
+
+`test/provider-wire.test.ts` runs both adapters against mock HTTP servers and asserts the **bytes
+actually sent**: system prompt placement, `role: 'tool'` vs merged `tool_result` blocks,
+`input_schema` vs `function.parameters`, and arguments being a JSON string. Type-checking cannot
+catch a protocol mismatch — only the request body can. 28 tests total.
+
+### 19.5 Settings became a page
+
+Archive / Settings tabs. The provider picker, protocol, base URL, model, key and autostart all
+live on the Settings tab; the archive view is no longer buried under configuration.
+
+The header now distinguishes **three** states rather than two, because "model-assisted" covered
+two very different privacy positions:
+
+- `local only · nothing leaves this machine`
+- `local model · 127.0.0.1:11434 · nothing leaves this machine`
+- `model-assisted · <model> · api.cohere.ai`

@@ -60,12 +60,19 @@ deliberate about this: it means your contacts' messages leave your machine. If t
 acceptable, stay in local-only mode, or swap `Enricher` for a local model — it's one class with
 two methods.
 
-**Any Anthropic-compatible endpoint works.** Set **API base URL** in Settings to point at a
-local agent, a proxy, or a self-hosted gateway — a base URL on its own is enough, since a
-service on `127.0.0.1` usually needs no credential. That gives you a third position worth
-knowing about: glosses and answers, with message text never leaving the machine. The header
-shows the host it is talking to, so you can tell at a glance where your contacts' messages are
-going.
+**Almost any provider works.** The **Settings** tab has a provider picker with built-in presets —
+Anthropic, OpenAI, Cohere, Groq, OpenRouter, Ollama, LM Studio — plus **Bring your own…** for any
+other endpoint.
+
+Two wire protocols exist in practice: Anthropic's `/v1/messages` and the OpenAI-shaped
+`/chat/completions` that nearly everything else implements. Presets pick the right one for you;
+"bring your own" lets you choose. Picking the wrong protocol gives 404s, which is the single most
+common way this goes wrong.
+
+Pointing it at **Ollama or LM Studio on this machine** gives you a third privacy position worth
+knowing about: Franco transliteration, English glosses and the chatbot, with message text never
+leaving the machine. Local runners need no API key — a base URL alone is enough. The header names
+the host in use, so you can always see where your contacts' messages are going.
 
 Switching between modes is live. Pasting or clearing a key or URL in Settings takes effect
 immediately; the WhatsApp connection is deliberately left alone so you never drop messages over

@@ -1,11 +1,12 @@
 import { BrowserWindow, dialog, ipcMain } from 'electron';
-import Anthropic from '@anthropic-ai/sdk';
+import { makeProvider, type ChatProvider } from '../core/provider.js';
 import { loadConfig, type Config } from './config.js';
 import { auditWorkspace, openWorkspace, type Workspace } from '../core/workspace.js';
 import { openDatabase, stats, type DB } from '../core/db.js';
 import { WhatsAppArchive } from '../core/whatsapp.js';
 import { Enricher, ask } from '../core/enrich.js';
 import { listChats, searchMessages } from '../core/search.js';
+import { PROVIDER_PRESETS, isLocalEndpoint, presetById } from '../shared/providers.js';
 import {
   CHANNELS,
   EVENTS,
@@ -39,7 +40,7 @@ interface Runtime {
   db: DB;
   wa: WhatsAppArchive;
   enricher: Enricher;
-  client: Anthropic | null;
+  provider: ChatProvider | null;
 }
 
 let rt: Runtime | null = null;
@@ -94,8 +95,8 @@ async function boot(cfg: Config, root: string): Promise<Runtime> {
   const ws = await openWorkspace(root);
   const db = openDatabase(ws.dbPath);
   const wa = new WhatsAppArchive(db, ws.authDir, ws.mediaDir);
-  const enricher = new Enricher(db, cfg.anthropicApiKey, cfg.model, cfg.baseUrl);
-  const client = makeClient();
+  const provider = currentProvider();
+  const enricher = new Enricher(db, provider, cfg.model);
 
   // Push, don't poll. The socket already fires on every captured message; the
   // renderer used to ask every 2.5s for something it could simply be told.
@@ -118,7 +119,7 @@ async function boot(cfg: Config, root: string): Promise<Runtime> {
     if (rt) broadcast(EVENTS.stats, stats(rt.db));
   });
 
-  return { ws, db, wa, enricher, client };
+  return { ws, db, wa, enricher, provider };
 }
 
 /**
@@ -129,18 +130,19 @@ async function boot(cfg: Config, root: string): Promise<Runtime> {
  * alone — re-linking because someone pasted a key would be absurd, and would
  * drop messages while it reconnected.
  */
-function makeClient(): Anthropic | null {
-  if (!cfg.anthropicApiKey && !cfg.baseUrl) return null;
-  return new Anthropic({
-    apiKey: cfg.anthropicApiKey || 'local',
-    ...(cfg.baseUrl ? { baseURL: cfg.baseUrl } : {}),
+function currentProvider(): ChatProvider | null {
+  return makeProvider({
+    kind: cfg.providerKind,
+    apiKey: cfg.anthropicApiKey,
+    baseUrl: cfg.baseUrl,
   });
 }
 
 function rebuildProvider(): void {
   if (!rt) return;
-  rt.enricher = new Enricher(rt.db, cfg.anthropicApiKey, cfg.model, cfg.baseUrl);
-  rt.client = makeClient();
+  const provider = currentProvider();
+  rt.provider = provider;
+  rt.enricher = new Enricher(rt.db, provider, cfg.model);
 }
 
 async function describeSettings(message?: string): Promise<AppSettings & { message?: string }> {
@@ -151,6 +153,10 @@ async function describeSettings(message?: string): Promise<AppSettings & { messa
     autostartEffective: settings.openAtLogin,
     model: cfg.model,
     baseUrl: cfg.baseUrl,
+    providerId: cfg.providerId,
+    providerKind: cfg.providerKind,
+    presets: PROVIDER_PRESETS,
+    localEndpoint: isLocalEndpoint(cfg.baseUrl),
     hasKey: key !== undefined,
     keyPersisted: keyPersisted,
     encryptionAvailable: await encryptionAvailable(),
@@ -181,6 +187,21 @@ export function registerIpc(initial: Config): void {
     }
     if (patch.baseUrl !== undefined) {
       updateSettings({ baseUrl: patch.baseUrl.trim() });
+    }
+    if (patch.providerKind !== undefined) {
+      updateSettings({ providerKind: patch.providerKind });
+    }
+    // Selecting a preset applies its endpoint and protocol. The model and key
+    // are left alone — they are the user's, and a preset must not silently
+    // discard a key they just pasted.
+    if (patch.providerId !== undefined) {
+      const preset = presetById(patch.providerId);
+      updateSettings({
+        providerId: patch.providerId,
+        ...(preset && patch.providerId !== 'custom'
+          ? { providerKind: preset.kind, baseUrl: preset.baseUrl }
+          : {}),
+      });
     }
     if (patch.openAtLogin !== undefined) {
       // Store what actually took effect, not what was asked for.
@@ -266,14 +287,14 @@ export function registerIpc(initial: Config): void {
   }));
 
   ipcMain.handle(CHANNELS.askSend, async (_e, question: string) => {
-    const { db, client } = need();
-    if (!client) {
+    const { db, provider } = need();
+    if (!provider) {
       throw new Error(
-        'Answering questions needs a model. Set ANTHROPIC_API_KEY and restart, or keep ' +
-          'using search, which runs entirely on this machine.',
+        'Answering questions needs a provider. Choose one in Settings, or keep using ' +
+          'search, which runs entirely on this machine.',
       );
     }
-    return ask(db, client, cfg.model, question);
+    return ask(db, provider, cfg.model, question);
   });
 }
 

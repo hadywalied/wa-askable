@@ -1,4 +1,5 @@
 import { app, safeStorage } from 'electron';
+import type { ProviderKind } from '../shared/providers.js';
 import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
@@ -16,8 +17,12 @@ export interface Settings {
   lastWorkspace: string | null;
   /** Model used for glossing and answering. Not a secret. */
   model: string;
+  /** Which preset the user picked. Presentation only — kind/baseUrl decide behaviour. */
+  providerId: string;
+  /** Which wire protocol the endpoint speaks. */
+  providerKind: ProviderKind;
   /**
-   * Base URL of an Anthropic-compatible API. Empty means Anthropic's own.
+   * Base URL of the API. Empty means the SDK's own default.
    * Point it at a local agent (openclaw, a proxy, an offline gateway) to keep
    * message text on this machine while still getting glosses and answers.
    */
@@ -28,6 +33,8 @@ const DEFAULTS: Settings = {
   openAtLogin: true,
   lastWorkspace: null,
   model: 'claude-sonnet-5',
+  providerId: 'anthropic',
+  providerKind: 'anthropic',
   baseUrl: '',
 };
 

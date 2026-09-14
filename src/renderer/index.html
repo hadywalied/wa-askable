@@ -17,7 +17,17 @@
        padding:40px 20px 96px}
   main{max-width:820px;margin:0 auto}
 
-  header{margin-bottom:34px}
+  header{margin-bottom:22px}
+  nav.tabs{display:flex;gap:4px;margin:18px 0 26px;border-bottom:1px solid var(--rule)}
+  nav.tabs button{background:none;border:0;padding:9px 16px;font:inherit;color:var(--soft);
+    cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-1px;border-radius:0}
+  nav.tabs button:hover{color:var(--ink)}
+  nav.tabs button[aria-selected="true"]{color:var(--deep);border-bottom-color:var(--teal);
+    font-weight:600}
+  .view[hidden]{display:none}
+  .field-note{color:var(--soft);font-size:13px;margin:4px 0 0}
+  select{width:100%;padding:9px 10px;font:inherit;border:1px solid var(--rule);
+    border-radius:7px;background:var(--card);color:var(--ink)}
   h1{font-size:19px;letter-spacing:-.01em;margin:0 0 4px;font-weight:650}
   .sub{color:var(--soft);font-size:13.5px;margin:0}
   .mode{display:inline-block;margin-top:12px;font:11.5px/1 var(--mono);
@@ -86,6 +96,12 @@
     <span class="mode" id="mode">checking…</span>
   </header>
 
+  <nav class="tabs" role="tablist">
+    <button id="tabArchive" role="tab" aria-selected="true">Archive</button>
+    <button id="tabSettings" role="tab" aria-selected="false">Settings</button>
+  </nav>
+
+  <div class="view" id="viewArchive">
   <section>
     <h2>Workspace</h2>
     <div class="row">
@@ -151,8 +167,33 @@
     <p class="note" id="askNote"></p>
   </section>
 
+  </div><!-- /viewArchive -->
+
+  <div class="view" id="viewSettings" hidden>
   <section id="settingsPanel">
-    <h2>Settings</h2>
+    <h2>AI provider</h2>
+
+    <div class="row">
+      <div>
+        <label for="providerId">Provider</label>
+        <select id="providerId"></select>
+      </div>
+    </div>
+    <p class="field-note" id="providerNote"></p>
+
+    <div class="row">
+      <div>
+        <label for="providerKind">Wire protocol</label>
+        <select id="providerKind">
+          <option value="anthropic">Anthropic — /v1/messages</option>
+          <option value="openai">OpenAI-compatible — /chat/completions</option>
+        </select>
+      </div>
+    </div>
+    <p class="field-note">
+      Most services other than Anthropic speak the OpenAI shape, including local runners.
+      Picking the wrong one gives 404s.
+    </p>
 
     <div class="row">
       <div>
@@ -193,6 +234,7 @@
     </div>
     <p class="note" id="settingsNote"></p>
   </section>
+  </div><!-- /viewSettings -->
 </main>
 
 <script type="module" src="./app.js"></script>

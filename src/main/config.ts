@@ -1,6 +1,7 @@
 import { app } from 'electron';
 import path from 'node:path';
 import { getApiKey, getSettings } from './settings.js';
+import type { ProviderKind } from '../shared/providers.js';
 
 /**
  * Runtime configuration.
@@ -13,6 +14,8 @@ import { getApiKey, getSettings } from './settings.js';
 export interface Config {
   anthropicApiKey: string | undefined;
   model: string;
+  providerId: string;
+  providerKind: ProviderKind;
   /** Empty string means Anthropic's own endpoint. */
   baseUrl: string;
   localOnly: boolean;
@@ -21,10 +24,13 @@ export interface Config {
 
 export async function loadConfig(): Promise<Config> {
   const key = await getApiKey();
-  const baseUrl = getSettings().baseUrl.trim();
+  const settings = getSettings();
+  const baseUrl = settings.baseUrl.trim();
   return {
     anthropicApiKey: key,
-    model: getSettings().model,
+    model: settings.model,
+    providerId: settings.providerId,
+    providerKind: settings.providerKind,
     baseUrl,
     // Local-only is a real mode, not a degraded one: capture, folding, stemming
     // and keyword search all work, and nothing leaves the machine at all.

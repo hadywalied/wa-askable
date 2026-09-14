@@ -261,9 +261,20 @@ async function runSmokeTest(win: BrowserWindow): Promise<void> {
     const s1 = await window.wa.saveSettings({ apiKey: 'sk-ant-test-not-a-real-key', model: 'claude-opus-5' });
     // A base URL alone must enable model-assisted mode — a local agent usually
     // needs no credential, and requiring one would make that case impossible.
-    const sB = await window.wa.saveSettings({ apiKey: null, baseUrl: 'http://127.0.0.1:9 ' });
-    out.baseUrlOnly = [sB.hasKey, sB.localOnly, sB.baseUrl].join('|');
-    await window.wa.saveSettings({ baseUrl: '' });
+    const sB = await window.wa.saveSettings({ apiKey: null, providerId: 'ollama' });
+    out.presetApplied = [sB.providerId, sB.providerKind, sB.baseUrl, sB.localOnly, sB.localEndpoint].join('|');
+    out.presetCount = (sB.presets || []).length;
+    const sC = await window.wa.saveSettings({ providerId: 'cohere' });
+    out.cohere = [sC.providerKind, sC.baseUrl].join('|');
+    await window.wa.saveSettings({ providerId: 'anthropic', baseUrl: '' });
+
+    // The settings page must actually exist and be reachable.
+    document.getElementById('tabSettings').click();
+    out.settingsVisible = !document.getElementById('viewSettings').hidden
+      && document.getElementById('viewArchive').hidden;
+    out.providerOptions = document.getElementById('providerId').options.length;
+    document.getElementById('tabArchive').click();
+    out.archiveBack = !document.getElementById('viewArchive').hidden;
     out.afterSet = [s1.hasKey, s1.localOnly, s1.model].join('|');
     out.keyStillNotReturned = !JSON.stringify(s1).includes('sk-ant-');
     // ask() must now get past the local-only guard (it will fail on auth, which

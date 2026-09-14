@@ -1,7 +1,17 @@
-import Anthropic from '@anthropic-ai/sdk';
 import type { DB } from './db.js';
+import type { ChatMessage, ChatProvider, ToolSpec } from './provider.js';
 import { classifyScript, foldForSearch, normalizeArabic, stemsForSearch } from './normalize.js';
 import { TOOL_DEFINITIONS, runTool } from './search.js';
+
+/**
+ * The agent's tools in the neutral shape. `input_schema` is Anthropic's name for
+ * it; each adapter renames it for its own wire format.
+ */
+const AGENT_TOOLS: ToolSpec[] = TOOL_DEFINITIONS.map((t) => ({
+  name: t.name,
+  description: t.description,
+  parameters: t.input_schema as unknown as Record<string, unknown>,
+}));
 
 /**
  * Everything that needs a model lives here: turning Franco into Arabic script,
@@ -31,26 +41,16 @@ interface GlossResult {
 }
 
 export class Enricher {
-  private client: Anthropic | null;
   private running = false;
 
   constructor(
     private readonly db: DB,
-    apiKey: string | undefined,
+    private readonly provider: ChatProvider | null,
     private readonly model: string,
-    baseUrl?: string,
-  ) {
-    // A local, Anthropic-compatible endpoint usually needs no credential, so a
-    // base URL alone is enough to enable enrichment. The SDK still wants a
-    // non-empty apiKey, hence the placeholder.
-    this.client =
-      apiKey || baseUrl
-        ? new Anthropic({ apiKey: apiKey || 'local', ...(baseUrl ? { baseURL: baseUrl } : {}) })
-        : null;
-  }
+  ) {}
 
   get enabled(): boolean {
-    return this.client !== null;
+    return this.provider !== null;
   }
 
   pendingCount(): number {
@@ -103,7 +103,7 @@ export class Enricher {
         });
 
         if (needsModel.length > 0) {
-          if (!this.client) {
+          if (!this.provider) {
             // No key: fold what we can and stop asking.
             for (const m of needsModel) {
               this.db
@@ -119,7 +119,7 @@ export class Enricher {
           }
         }
         onProgress?.(processed + skipped, total);
-        if (!this.client) break;
+        if (!this.provider) break;
       }
     } finally {
       this.running = false;
@@ -128,22 +128,17 @@ export class Enricher {
   }
 
   private async glossBatch(batch: { id: string; body_raw: string }[]): Promise<void> {
-    if (!this.client) return;
+    if (!this.provider) return;
     const numbered = batch.map((m, i) => `${i + 1}. ${m.body_raw.slice(0, 600)}`).join('\n');
 
     try {
-      const res = await this.client.messages.create({
+      const res = await this.provider.chat({
         model: this.model,
-        max_tokens: 4096,
+        maxTokens: 4096,
         system: GLOSS_SYSTEM,
         messages: [{ role: 'user', content: numbered }],
       });
-      const text = res.content
-        .filter((b): b is Anthropic.TextBlock => b.type === 'text')
-        .map((b) => b.text)
-        .join('')
-        .replace(/```json|```/g, '')
-        .trim();
+      const text = res.text.replace(/```json|```/g, '').trim();
 
       const parsed = JSON.parse(text) as GlossResult[];
       const update = this.db.prepare(
@@ -197,55 +192,38 @@ export interface AgentReply {
 
 export async function ask(
   db: DB,
-  client: Anthropic,
+  provider: ChatProvider,
   model: string,
   question: string,
-  history: Anthropic.MessageParam[] = [],
+  history: ChatMessage[] = [],
 ): Promise<AgentReply> {
-  const messages: Anthropic.MessageParam[] = [
-    ...history,
-    { role: 'user', content: question },
-  ];
+  const messages: ChatMessage[] = [...history, { role: 'user', content: question }];
   const toolCalls: { name: string; input: unknown }[] = [];
 
   // Bounded loop. An agent that can search forever will.
   for (let turn = 0; turn < 8; turn++) {
-    const res = await client.messages.create({
+    const res = await provider.chat({
       model,
-      max_tokens: 2048,
+      maxTokens: 2048,
       system: AGENT_SYSTEM,
-      tools: TOOL_DEFINITIONS as unknown as Anthropic.Tool[],
+      tools: AGENT_TOOLS,
       messages,
     });
 
-    const uses = res.content.filter(
-      (b): b is Anthropic.ToolUseBlock => b.type === 'tool_use',
-    );
-
-    if (uses.length === 0) {
-      const answer = res.content
-        .filter((b): b is Anthropic.TextBlock => b.type === 'text')
-        .map((b) => b.text)
-        .join('\n')
-        .trim();
-      return { answer, toolCalls };
+    if (res.toolCalls.length === 0) {
+      return { answer: res.text, toolCalls };
     }
 
-    messages.push({ role: 'assistant', content: res.content });
-    messages.push({
-      role: 'user',
-      content: uses.map((u) => {
-        toolCalls.push({ name: u.name, input: u.input });
-        return {
-          type: 'tool_result' as const,
-          tool_use_id: u.id,
-          content: JSON.stringify(runTool(db, u.name, u.input as Record<string, unknown>)).slice(
-            0,
-            60_000,
-          ),
-        };
-      }),
-    });
+    messages.push({ role: 'assistant', content: res.text, toolCalls: res.toolCalls });
+    for (const call of res.toolCalls) {
+      toolCalls.push({ name: call.name, input: call.input });
+      messages.push({
+        role: 'tool',
+        toolCallId: call.id,
+        name: call.name,
+        content: JSON.stringify(runTool(db, call.name, call.input)).slice(0, 60_000),
+      });
+    }
   }
 
   return {

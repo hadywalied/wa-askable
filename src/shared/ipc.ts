@@ -54,7 +54,15 @@ export interface WhatsAppStatus {
   capturedThisSession: number;
 }
 
+import type { ProviderKind, ProviderPreset } from './providers.js';
+
 export interface AppSettings {
+  providerId: string;
+  providerKind: ProviderKind;
+  /** The catalogue, so the renderer has a single source of truth. */
+  presets: ProviderPreset[];
+  /** True when the configured endpoint is on this machine. */
+  localEndpoint: boolean;
   openAtLogin: boolean;
   autostartEffective: boolean;
   model: string;
@@ -74,6 +82,8 @@ export interface SettingsPatch {
   openAtLogin?: boolean;
   model?: string;
   baseUrl?: string;
+  providerId?: string;
+  providerKind?: ProviderKind;
   /** '' or null clears the key. Undefined leaves it untouched. */
   apiKey?: string | null;
 }

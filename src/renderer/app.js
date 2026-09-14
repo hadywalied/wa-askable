@@ -147,19 +147,60 @@ async function refreshOnce() {
 
 // The key is write-only from here: settings:get reports whether one is set, and
 // never what it is. The field shows a placeholder, not the secret.
+// --- tabs -------------------------------------------------------------------
+
+function showView(which) {
+  $('viewArchive').hidden = which !== 'archive';
+  $('viewSettings').hidden = which !== 'settings';
+  $('tabArchive').setAttribute('aria-selected', String(which === 'archive'));
+  $('tabSettings').setAttribute('aria-selected', String(which === 'settings'));
+}
+$('tabArchive').onclick = () => showView('archive');
+$('tabSettings').onclick = () => showView('settings');
+
+let presets = [];
+
+function paintPresets(s) {
+  presets = s.presets || [];
+  const sel = $('providerId');
+  if (sel.options.length !== presets.length) {
+    sel.innerHTML = presets.map((p) => `<option value="${p.id}">${p.label}</option>`).join('');
+  }
+  sel.value = s.providerId;
+  $('providerKind').value = s.providerKind;
+
+  const preset = presets.find((p) => p.id === s.providerId);
+  // Only "custom" gets to choose its own protocol and URL; a preset that let you
+  // edit them would silently stop being that preset.
+  const custom = s.providerId === 'custom';
+  $('providerKind').disabled = !custom;
+  $('baseUrl').disabled = !custom;
+  if (preset?.suggestedModel && !$('model').value) $('model').value = preset.suggestedModel;
+
+  const bits = [];
+  if (preset?.note) bits.push(preset.note);
+  if (preset && !preset.needsKey) bits.push('Usually needs no API key.');
+  if (preset?.suggestedModel) bits.push(`Example model: ${preset.suggestedModel}`);
+  $('providerNote').textContent = bits.join(' ');
+}
+
 function paintSettings(s) {
   $('model').value = s.model || '';
   $('baseUrl').value = s.baseUrl || '';
+  paintPresets(s);
   $('openAtLogin').checked = s.openAtLogin;
   $('apiKey').placeholder = s.hasKey ? '•••••••• (set)' : 'sk-ant-…';
   $('apiKey').value = '';
   localOnly = s.localOnly;
-  // Say where the text is going, not just that it is going somewhere. A local
-  // endpoint is a materially different privacy position from Anthropic's.
-  const where = s.baseUrl ? ` · ${new URL(s.baseUrl).host}` : '';
+  // Say where the text is going, not just that it is going somewhere. Three
+  // materially different privacy positions, so name which one is in effect.
+  let where = '';
+  try { where = s.baseUrl ? ` · ${new URL(s.baseUrl).host}` : ''; } catch { where = ''; }
   $('mode').textContent = s.localOnly
     ? 'local only · nothing leaves this machine'
-    : `model-assisted · ${s.model}${where}`;
+    : s.localEndpoint
+      ? `local model${where} · nothing leaves this machine`
+      : `model-assisted · ${s.model}${where}`;
   enable('askPanel', !s.localOnly && Boolean(s.workspace));
 
   const notes = [];
@@ -185,6 +226,13 @@ async function saveSettings(patch) {
   }
   $('saveSettings').disabled = false;
 }
+
+$('providerId').onchange = (e) => {
+  // Applied immediately so the endpoint and protocol fields reflect reality
+  // before anything is saved against them.
+  saveSettings({ providerId: e.target.value });
+};
+$('providerKind').onchange = (e) => saveSettings({ providerKind: e.target.value });
 
 $('saveSettings').onclick = () => {
   const key = $('apiKey').value;
