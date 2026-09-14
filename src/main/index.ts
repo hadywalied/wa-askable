@@ -213,6 +213,24 @@ async function runSmokeTest(win: BrowserWindow): Promise<void> {
     // calls this test makes directly.
     out.modeText = document.getElementById('mode').textContent;
     out.wsPath = document.getElementById('wsPath').value;
+
+    // --- Phase 3: settings ---------------------------------------------
+    const s0 = await window.wa.getSettings();
+    out.settingsShape = [s0.model, s0.hasKey, s0.localOnly, s0.encryptionAvailable].join('|');
+    // The key must never travel back to the renderer, under any field name.
+    out.keyNeverReturned = !JSON.stringify(s0).includes('sk-ant-');
+
+    // Setting a key must flip local-only -> model-assisted with no relaunch.
+    const s1 = await window.wa.saveSettings({ apiKey: 'sk-ant-test-not-a-real-key', model: 'claude-opus-5' });
+    out.afterSet = [s1.hasKey, s1.localOnly, s1.model].join('|');
+    out.keyStillNotReturned = !JSON.stringify(s1).includes('sk-ant-');
+    // ask() must now get past the local-only guard (it will fail on auth, which
+    // is a different error and proves the client was rebuilt live).
+    out.askAfterKey = await window.wa.ask('hi').then(() => 'NO ERROR', (e) => e.message.slice(0, 30));
+
+    // Clearing it must flip straight back.
+    const s2 = await window.wa.saveSettings({ apiKey: null });
+    out.afterClear = [s2.hasKey, s2.localOnly].join('|');
     return JSON.stringify(out);
   })()`;
   try {
@@ -246,8 +264,7 @@ if (gotLock) {
       });
     });
 
-    const cfg = loadConfig();
-    registerIpc(cfg);
+    registerIpc(await loadConfig());
 
     createTray(hooks);
     onStatusChange((s) => updateTray(s, hooks));
@@ -266,7 +283,7 @@ if (gotLock) {
     createWindow(!startHidden);
 
     // Resume capture without waiting for anyone to click anything.
-    const resumed = await resumeLastWorkspace(cfg);
+    const resumed = await resumeLastWorkspace();
     if (resumed) updateTray(currentStatus(), hooks);
 
     app.on('activate', showWindow);

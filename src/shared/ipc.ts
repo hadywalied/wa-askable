@@ -18,6 +18,9 @@ export const CHANNELS = {
   chatsList: 'chats:list',
   searchRun: 'search:run',
   askSend: 'ask:send',
+  settingsGet: 'settings:get',
+  settingsSave: 'settings:save',
+  workspacePick: 'workspace:pick',
 } as const;
 
 /** Pushed from main; the renderer no longer polls. */
@@ -49,6 +52,31 @@ export interface WhatsAppStatus {
   selfJid?: string;
   lastError?: string;
   capturedThisSession: number;
+}
+
+export interface AppSettings {
+  openAtLogin: boolean;
+  autostartEffective: boolean;
+  model: string;
+  /** Never the key itself — only whether one is set. */
+  hasKey: boolean;
+  keyPersisted: boolean;
+  encryptionAvailable: boolean;
+  keyFromEnv: boolean;
+  localOnly: boolean;
+  workspace: string | null;
+  defaultWorkspace: string;
+}
+
+export interface SettingsPatch {
+  openAtLogin?: boolean;
+  model?: string;
+  /** '' or null clears the key. Undefined leaves it untouched. */
+  apiKey?: string | null;
+}
+
+export interface SettingsSaveResult extends AppSettings {
+  message?: string;
 }
 
 export interface SessionInfo {

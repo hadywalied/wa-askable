@@ -54,7 +54,7 @@ $('openWs').onclick = async () => {
     const r = await wa.openWorkspace($('wsPath').value.trim());
     $('wsWarnings').innerHTML = r.warnings.length
       ? r.warnings.map((w) => `<div class="alert">${w.message}</div>`).join('')
-      : `<div class="alert ok">Workspace ready at <code>${r.workspace}</code>. Permissions set to owner-only.</div>`;
+      : `<div class="alert ok">Workspace ready at <code>${r.workspace}</code>.</div>`;
     paintStats(r.stats);
     ['connPanel', 'refreshPanel'].forEach((p) => enable(p, true));
     enable('askPanel', !localOnly);
@@ -131,7 +131,64 @@ async function refreshOnce() {
   $('mode').textContent = localOnly
     ? 'local only · nothing leaves this machine'
     : `model-assisted · ${s.model}`;
+  paintSettings(await wa.getSettings());
   $('askNote').textContent = localOnly
     ? 'Asking questions needs a model. Set ANTHROPIC_API_KEY in .env and restart. Capture and keyword search keep working without one.'
     : 'Message text is sent to the model to answer. Voice notes and images are described automatically and are often wrong — the answer will point you at the original rather than quote it.';
 })();
+
+// --- settings ---------------------------------------------------------------
+
+// The key is write-only from here: settings:get reports whether one is set, and
+// never what it is. The field shows a placeholder, not the secret.
+function paintSettings(s) {
+  $('model').value = s.model || '';
+  $('openAtLogin').checked = s.openAtLogin;
+  $('apiKey').placeholder = s.hasKey ? '•••••••• (set)' : 'sk-ant-…';
+  $('apiKey').value = '';
+  localOnly = s.localOnly;
+  $('mode').textContent = s.localOnly
+    ? 'local only · nothing leaves this machine'
+    : `model-assisted · ${s.model}`;
+  enable('askPanel', !s.localOnly && Boolean(s.workspace));
+
+  const notes = [];
+  if (s.message) notes.push(s.message);
+  if (s.keyFromEnv) {
+    notes.push('ANTHROPIC_API_KEY is set in the environment and takes precedence over this field.');
+  }
+  if (s.hasKey && !s.encryptionAvailable) {
+    notes.push('No OS keystore here, so the key lives in memory for this session only.');
+  }
+  if (!s.openAtLogin) {
+    notes.push('Not starting at login. Messages that arrive while this app is closed are lost — there is no backfill.');
+  }
+  $('settingsNote').textContent = notes.join(' ');
+}
+
+async function saveSettings(patch) {
+  $('saveSettings').disabled = true;
+  try {
+    paintSettings(await wa.saveSettings(patch));
+  } catch (e) {
+    $('settingsNote').textContent = e.message;
+  }
+  $('saveSettings').disabled = false;
+}
+
+$('saveSettings').onclick = () => {
+  const key = $('apiKey').value;
+  saveSettings({
+    model: $('model').value.trim(),
+    // Undefined leaves the stored key alone; only send it when something was typed.
+    ...(key ? { apiKey: key } : {}),
+  });
+};
+
+$('clearKey').onclick = () => saveSettings({ apiKey: null });
+$('openAtLogin').onchange = (e) => saveSettings({ openAtLogin: e.target.checked });
+
+$('browseWs').onclick = async () => {
+  const { path } = await wa.pickWorkspace();
+  if (path) $('wsPath').value = path;
+};

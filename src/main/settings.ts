@@ -1,5 +1,5 @@
-import { app } from 'electron';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { app, safeStorage } from 'electron';
+import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
 /**
@@ -14,9 +14,15 @@ export interface Settings {
   openAtLogin: boolean;
   /** Last workspace, reopened automatically so capture resumes without a click. */
   lastWorkspace: string | null;
+  /** Model used for glossing and answering. Not a secret. */
+  model: string;
 }
 
-const DEFAULTS: Settings = { openAtLogin: true, lastWorkspace: null };
+const DEFAULTS: Settings = {
+  openAtLogin: true,
+  lastWorkspace: null,
+  model: 'claude-sonnet-5',
+};
 
 let cache: Settings | null = null;
 
@@ -95,4 +101,97 @@ function applyLinuxAutostart(enabled: boolean): boolean {
   } catch {
     return false;
   }
+}
+
+
+// --- the API key ------------------------------------------------------------
+
+/**
+ * The key is a secret and never goes in settings.json. It is encrypted with the
+ * OS keystore (Keychain / DPAPI / libsecret) and written as opaque bytes.
+ *
+ * Electron 46 removes the synchronous safeStorage API, so this uses the async
+ * one throughout: isAsyncEncryptionAvailable / encryptStringAsync /
+ * decryptStringAsync (which resolves to { result }).
+ */
+const secretFile = (): string => path.join(app.getPath('userData'), 'secret.bin');
+
+/**
+ * Session-only fallback. If the OS has no keystore available — a Linux box with
+ * no libsecret provider, typically — we hold the key in memory for this run
+ * rather than writing a secret to disk in plaintext. The UI is told, so the user
+ * finds out now instead of discovering it after a restart.
+ */
+let memoryKey: string | undefined;
+
+export async function encryptionAvailable(): Promise<boolean> {
+  try {
+    return await safeStorage.isAsyncEncryptionAvailable();
+  } catch {
+    return false;
+  }
+}
+
+export async function getApiKey(): Promise<string | undefined> {
+  if (memoryKey) return memoryKey;
+  // An env var still wins, so a dev shell keeps working exactly as before.
+  const fromEnv = process.env.ANTHROPIC_API_KEY?.trim();
+  if (fromEnv) return fromEnv;
+  try {
+    if (!existsSync(secretFile())) return undefined;
+    if (!(await encryptionAvailable())) return undefined;
+    const { result } = await safeStorage.decryptStringAsync(readFileSync(secretFile()));
+    return result.trim() || undefined;
+  } catch {
+    // A key encrypted under a different OS user or a rotated keystore cannot be
+    // read back. Better to behave as local-only than to crash on startup.
+    return undefined;
+  }
+}
+
+export interface KeySaveResult {
+  ok: boolean;
+  /** False when the key is only held for this session. */
+  persisted: boolean;
+  message?: string;
+}
+
+export async function setApiKey(key: string | null): Promise<KeySaveResult> {
+  if (key === null || key.trim() === '') {
+    memoryKey = undefined;
+    try {
+      if (existsSync(secretFile())) rmSync(secretFile());
+    } catch {
+      /* non-fatal */
+    }
+    return { ok: true, persisted: false };
+  }
+
+  const trimmed = key.trim();
+  memoryKey = trimmed;
+
+  if (!(await encryptionAvailable())) {
+    return {
+      ok: true,
+      persisted: false,
+      message:
+        'No OS keystore is available, so the key is kept for this session only and will be ' +
+        'forgotten when you quit. It was not written to disk in plaintext.',
+    };
+  }
+  try {
+    const blob = await safeStorage.encryptStringAsync(trimmed);
+    writeFileSync(secretFile(), blob, { mode: 0o600 });
+    return { ok: true, persisted: true };
+  } catch (err) {
+    return {
+      ok: true,
+      persisted: false,
+      message: `Key kept for this session only — could not write it securely: ${String(err)}`,
+    };
+  }
+}
+
+export async function hasApiKey(): Promise<boolean> {
+  return (await getApiKey()) !== undefined;
 }

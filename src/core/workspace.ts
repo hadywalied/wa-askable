@@ -82,16 +82,31 @@ export async function auditWorkspace(ws: Workspace): Promise<WorkspaceWarning[]>
     });
   }
 
-  try {
-    const s = await stat(ws.authDir);
-    if ((s.mode & 0o077) !== 0) {
-      out.push({
-        level: 'warn',
-        message: 'The credentials directory is readable by other users on this machine.',
-      });
+  // POSIX mode bits are meaningless on Windows: chmod(0o700) silently does
+  // nothing there and stat() reports whatever it likes. Claiming "permissions
+  // set to owner-only" on that platform would be a lie, and this directory is a
+  // full WhatsApp account takeover for anyone who reads it.
+  if (process.platform === 'win32') {
+    out.push({
+      level: 'warn',
+      message:
+        'On Windows the credentials directory is protected by your user profile\u2019s ACLs, ' +
+        'not by this app \u2014 file permissions cannot be enforced here. Anyone who can read ' +
+        'this folder can impersonate your WhatsApp account, so keep it on an encrypted ' +
+        'disk (BitLocker) and out of any shared or synced location.',
+    });
+  } else {
+    try {
+      const s = await stat(ws.authDir);
+      if ((s.mode & 0o077) !== 0) {
+        out.push({
+          level: 'warn',
+          message: 'The credentials directory is readable by other users on this machine.',
+        });
+      }
+    } catch {
+      /* not created yet */
     }
-  } catch {
-    /* not created yet */
   }
 
   return out;

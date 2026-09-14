@@ -208,7 +208,7 @@ becomes a live instruction.
   a week of capture is lost silently.
 - Exit: laptop sleeps, wakes, reconnects; messages captured with no window open.
 
-### Phase 3 — Settings (usable by someone else)
+### Phase 3 — Settings (usable by someone else) ✅ **COMPLETE**
 - **API key** → `safeStorage.encryptString()` into `app.getPath('userData')`. `.env` + restart is
   not a UX. Must be changeable at runtime — flipping local-only ↔ model-assisted should not need a
   relaunch.
@@ -685,3 +685,89 @@ no window. Exit 0 = graceful shutdown completed.
   `process.execPath` is the app binary, which is correct — but confirm it after Phase 4.
 - Notifications on unlink are not implemented. The tray icon turns red; a system notification
   would be louder. Deferred deliberately — measure whether the icon is enough first.
+
+---
+
+## 15. Phase 3 build log
+
+Modified: `main/settings.ts`, `main/config.ts`, `main/ipc.ts`, `preload/index.ts`,
+`shared/ipc.ts`, `core/workspace.ts`, `renderer/index.html`, `renderer/app.js`.
+
+### 15.1 The plan's `safeStorage.encryptString()` is deprecated and dies in Electron 46
+
+> The synchronous API (`isEncryptionAvailable`/`encryptString`/`decryptString`) is deprecated and
+> will be removed in Electron 46.
+
+We are on 44, so writing what §4 Phase 3 specified would have been dead code within two majors.
+Uses the async API throughout: `isAsyncEncryptionAvailable()`, `encryptStringAsync()`,
+`decryptStringAsync()` — note the last resolves to `{ result }`, not a bare string.
+
+### 15.2 The key is write-only across the bridge
+
+`settings:get` reports `hasKey: boolean` and never the key itself, under any field name. Asserted
+in the smoke test (`keyNeverReturned`, `keyStillNotReturned`) by scanning the whole serialised
+response for the token prefix, so a future field that leaks it fails the build rather than review.
+
+Storage: encrypted bytes in `<userData>/secret.bin`, mode `0600`. Never `settings.json`.
+
+### 15.3 No keystore → memory only, never plaintext
+
+On a Linux box with no libsecret provider, `isAsyncEncryptionAvailable()` is false. The key is
+then held in memory for the session and **not** written to disk, and the UI says so rather than
+letting the user discover it after a restart. A secret silently written in plaintext would be
+worse than not persisting it.
+
+`ANTHROPIC_API_KEY` in the environment still wins, so a dev shell behaves exactly as before; the
+UI says when that is happening so the settings field does not appear to be ignored.
+
+### 15.4 Live provider rebuild — the actual Phase 3 deliverable
+
+`Enricher` and the Anthropic client both capture the key at construction, so a settings change
+replaces both (`rebuildProvider()`). `cfg` is re-read from storage rather than patched by hand, so
+there is exactly one path from stored settings to running configuration.
+
+**The WhatsApp socket is deliberately left alone.** Re-linking because someone pasted an API key
+would be absurd, and would drop messages while it reconnected.
+
+Proof in the smoke test — `ask()` after setting a key returns `401` from the API rather than the
+local-only guard message, which means the client really was rebuilt in place:
+
+```
+settingsShape       = claude-sonnet-5|false|true|true
+afterSet            = true|false|claude-opus-5      ← key set, localOnly flipped, no relaunch
+askAfterKey         = 401 {"type":"error",...       ← past the guard, real call, rebuilt client
+afterClear          = false|true                    ← and straight back to local-only
+keyNeverReturned    = true
+```
+
+Note: that check makes one real request to the API with a deliberately invalid key. 401 is the
+signal; nothing is sent but the auth attempt.
+
+### 15.5 `chmod 0700` is a no-op on Windows — the claim is now platform-honest
+
+`openWorkspace()` already swallowed the `chmod` failure, and `auditWorkspace()` tested
+`mode & 0o077`, which is meaningless on Windows. The UI then told the user
+*"Permissions set to owner-only"* — on Windows, a lie, about a directory that is a full WhatsApp
+account takeover.
+
+Now: the POSIX check runs only on non-Windows, Windows gets an explicit warning that file
+permissions cannot be enforced there and that BitLocker plus a non-synced location are the real
+controls, and the UI success message no longer claims anything about permissions.
+
+### 15.6 Native folder picker
+
+`dialog.showOpenDialog` with `['openDirectory', 'createDirectory', 'promptToCreate']` —
+`createDirectory` is macOS-only and `promptToCreate` Windows-only, both ignored elsewhere, so one
+list covers all three targets. `defaultPath` is the current workspace.
+
+### 15.7 Verification
+
+`tsc --noEmit` clean · `bun test` 16/16 · `bun run smoke` OK incl. the settings block ·
+`bun run smoke:lifecycle` OK.
+
+### 15.8 Carried forward
+
+- `README.md` still documents the old `npm run dev` / Fastify layout and says the agent has "four
+  read-only tools" when `TOOL_DEFINITIONS` has three. Rewrite it at Phase 4 as the handover doc.
+- Model is a free-text field. A list fetched from the API would be friendlier, but it must stay
+  typeable for models the picker does not know about.

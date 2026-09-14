@@ -1,13 +1,27 @@
-import { BrowserWindow, ipcMain } from 'electron';
+import { BrowserWindow, dialog, ipcMain } from 'electron';
 import Anthropic from '@anthropic-ai/sdk';
-import type { Config } from './config.js';
+import { loadConfig, type Config } from './config.js';
 import { auditWorkspace, openWorkspace, type Workspace } from '../core/workspace.js';
 import { openDatabase, stats, type DB } from '../core/db.js';
 import { WhatsAppArchive } from '../core/whatsapp.js';
 import { Enricher, ask } from '../core/enrich.js';
 import { listChats, searchMessages } from '../core/search.js';
-import { CHANNELS, EVENTS, type SearchArgs, type WhatsAppStatus } from '../shared/ipc.js';
-import { getSettings, updateSettings } from './settings.js';
+import {
+  CHANNELS,
+  EVENTS,
+  type AppSettings,
+  type SearchArgs,
+  type SettingsPatch,
+  type WhatsAppStatus,
+} from '../shared/ipc.js';
+import {
+  applyAutostart,
+  encryptionAvailable,
+  getApiKey,
+  getSettings,
+  setApiKey,
+  updateSettings,
+} from './settings.js';
 
 /**
  * Replaces server/app.ts.
@@ -29,6 +43,8 @@ interface Runtime {
 }
 
 let rt: Runtime | null = null;
+/** Mutable so a settings change takes effect without a relaunch. */
+let cfg: Config;
 
 /** Listeners outside the renderer that care about connection state (the tray). */
 const statusListeners = new Set<(s: WhatsAppStatus) => void>();
@@ -105,7 +121,78 @@ async function boot(cfg: Config, root: string): Promise<Runtime> {
   return { ws, db, wa, enricher, client };
 }
 
-export function registerIpc(cfg: Config): void {
+/**
+ * Rebuild everything that depends on the API key or model.
+ *
+ * Enricher and the Anthropic client both capture the key at construction, so a
+ * settings change has to replace them. The WhatsApp socket is deliberately left
+ * alone — re-linking because someone pasted a key would be absurd, and would
+ * drop messages while it reconnected.
+ */
+function rebuildProvider(): void {
+  if (!rt) return;
+  rt.enricher = new Enricher(rt.db, cfg.anthropicApiKey, cfg.model);
+  rt.client = cfg.anthropicApiKey ? new Anthropic({ apiKey: cfg.anthropicApiKey }) : null;
+}
+
+async function describeSettings(message?: string): Promise<AppSettings & { message?: string }> {
+  const settings = getSettings();
+  const key = await getApiKey();
+  return {
+    openAtLogin: settings.openAtLogin,
+    autostartEffective: settings.openAtLogin,
+    model: cfg.model,
+    hasKey: key !== undefined,
+    keyPersisted: keyPersisted,
+    encryptionAvailable: await encryptionAvailable(),
+    keyFromEnv: Boolean(process.env.ANTHROPIC_API_KEY?.trim()),
+    localOnly: cfg.localOnly,
+    workspace: rt?.ws.root ?? null,
+    defaultWorkspace: cfg.defaultWorkspace,
+    ...(message ? { message } : {}),
+  };
+}
+
+let keyPersisted = true;
+
+export function registerIpc(initial: Config): void {
+  cfg = initial;
+  ipcMain.handle(CHANNELS.settingsGet, () => describeSettings());
+
+  ipcMain.handle(CHANNELS.settingsSave, async (_e, patch: SettingsPatch) => {
+    let message: string | undefined;
+
+    if (patch.apiKey !== undefined) {
+      const res = await setApiKey(patch.apiKey);
+      keyPersisted = res.persisted;
+      message = res.message;
+    }
+    if (patch.model !== undefined && patch.model.trim()) {
+      updateSettings({ model: patch.model.trim() });
+    }
+    if (patch.openAtLogin !== undefined) {
+      // Store what actually took effect, not what was asked for.
+      updateSettings({ openAtLogin: applyAutostart(patch.openAtLogin) });
+    }
+
+    // Re-read rather than patching cfg by hand, so there is exactly one path
+    // from stored settings to running configuration.
+    cfg = await loadConfig();
+    rebuildProvider();
+    return describeSettings(message);
+  });
+
+  ipcMain.handle(CHANNELS.workspacePick, async (e) => {
+    const parent = BrowserWindow.fromWebContents(e.sender) ?? undefined;
+    const res = await dialog.showOpenDialog(parent!, {
+      title: 'Choose where to keep the archive',
+      defaultPath: rt?.ws.root ?? cfg.defaultWorkspace,
+      // createDirectory is macOS-only; Windows uses promptToCreate.
+      properties: ['openDirectory', 'createDirectory', 'promptToCreate'],
+    });
+    return { path: res.canceled ? null : (res.filePaths[0] ?? null) };
+  });
+
   ipcMain.handle(CHANNELS.sessionGet, () => ({
     localOnly: cfg.localOnly,
     model: cfg.model,
@@ -185,7 +272,7 @@ export function registerIpc(cfg: Config): void {
  * login, and capture resumes on its own. Without it, tray residency just means
  * a quiet app that is not recording.
  */
-export async function resumeLastWorkspace(cfg: Config): Promise<boolean> {
+export async function resumeLastWorkspace(): Promise<boolean> {
   const last = getSettings().lastWorkspace;
   if (!last) return false;
   try {

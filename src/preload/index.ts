@@ -1,11 +1,14 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import { CHANNELS, EVENTS } from '../shared/ipc.js';
 import type {
+  AppSettings,
   AskResult,
   OpenResult,
   RefreshResult,
   SearchArgs,
   SessionInfo,
+  SettingsPatch,
+  SettingsSaveResult,
   StatusResult,
   WhatsAppStatus,
   WorkspaceStats,
@@ -55,6 +58,12 @@ const api = {
   search: (args: SearchArgs): Promise<{ hits: unknown[] }> =>
     invoke(CHANNELS.searchRun, args),
   ask: (question: string): Promise<AskResult> => invoke(CHANNELS.askSend, question),
+
+  getSettings: (): Promise<AppSettings> => invoke(CHANNELS.settingsGet),
+  // The key travels in, never out: settings:get reports only whether one is set.
+  saveSettings: (patch: SettingsPatch): Promise<SettingsSaveResult> =>
+    invoke(CHANNELS.settingsSave, patch),
+  pickWorkspace: (): Promise<{ path: string | null }> => invoke(CHANNELS.workspacePick),
 
   onStatus: (cb: (s: WhatsAppStatus) => void): void => {
     ipcRenderer.on(EVENTS.status, (_event, payload: WhatsAppStatus) => cb(payload));

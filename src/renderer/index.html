@@ -93,6 +93,7 @@
         <label for="wsPath">Directory for the database, credentials and media</label>
         <input type="text" id="wsPath" spellcheck="false" placeholder="/home/you/wa-workspace">
       </div>
+      <button id="browseWs" class="ghost">Browse…</button>
       <button id="openWs">Open workspace</button>
     </div>
     <div id="wsWarnings"></div>
@@ -148,6 +149,40 @@
       <button id="send">Ask</button>
     </div>
     <p class="note" id="askNote"></p>
+  </section>
+
+  <section id="settingsPanel">
+    <h2>Settings</h2>
+
+    <div class="row">
+      <div>
+        <label for="model">Model</label>
+        <input type="text" id="model" spellcheck="false" placeholder="claude-sonnet-5">
+      </div>
+    </div>
+
+    <div class="row">
+      <div>
+        <label for="apiKey">Anthropic API key</label>
+        <input type="password" id="apiKey" spellcheck="false" autocomplete="off"
+               placeholder="sk-ant-…">
+      </div>
+      <button id="saveSettings">Save</button>
+      <button id="clearKey" class="ghost">Clear key</button>
+    </div>
+
+    <p class="note">
+      Without a key this stays in local-only mode: capture, folding, stemming and keyword
+      search all work and nothing leaves this machine. With a key set, message text is sent
+      to the model for glossing and answering — including messages other people wrote.
+    </p>
+
+    <div class="row" style="align-items:center">
+      <label style="flex:1">
+        <input type="checkbox" id="openAtLogin"> Start at login and keep capturing in the background
+      </label>
+    </div>
+    <p class="note" id="settingsNote"></p>
   </section>
 </main>
 
