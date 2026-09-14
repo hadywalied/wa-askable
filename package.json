@@ -3,6 +3,11 @@
   "version": "0.1.0",
   "private": true,
   "description": "A local archive of your WhatsApp, and a way to ask it questions.",
+  "author": {
+    "name": "hadywalied",
+    "email": "my.mepharo1230@gmail.com"
+  },
+  "homepage": "https://github.com/hadywalied/wa-askable",
   "main": "out/main/index.js",
   "type": "module",
   "engines": {
@@ -13,16 +18,18 @@
     "start": "electron-vite preview",
     "build": "electron-vite build",
     "rebuild": "electron-rebuild -f -m . -w better-sqlite3",
-    "postinstall": "node node_modules/electron/install.js && electron-rebuild -f -m . -w better-sqlite3",
+    "postinstall": "node scripts/postinstall.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "bun test test/",
-    "setup": "node node_modules/electron/install.js && electron-rebuild -f -m . -w better-sqlite3",
+    "setup": "node scripts/postinstall.mjs --strict",
     "smoke": "electron-vite build && WA_SMOKE=1 electron out/main/index.js",
     "smoke:lifecycle": "electron-vite build && WA_SMOKE=lifecycle electron out/main/index.js"
   },
   "trustedDependencies": [
     "better-sqlite3",
-    "electron"
+    "electron",
+    "electron-winstaller",
+    "esbuild"
   ],
   "dependencies": {
     "@anthropic-ai/sdk": "^0.30.1",
@@ -32,7 +39,14 @@
     "qrcode": "^1.5.4"
   },
   "devDependencies": {
+    "@electron/rebuild": "^4.2.0",
     "@types/better-sqlite3": "^7.6.11",
-    "@types/qrcode": "^1.5.5"
+    "@types/node": "^26.5.1",
+    "@types/qrcode": "^1.5.5",
+    "electron": "^44.3.0",
+    "electron-builder": "^26.15.3",
+    "electron-vite": "^5.0.0",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.0"
   }
 }

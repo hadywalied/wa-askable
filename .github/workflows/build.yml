@@ -1,0 +1,100 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+# Signed installers cannot be cross-compiled: macOS builds on macOS, Windows on
+# Windows. That is the whole reason this matrix exists. See PLAN.md §4 Phase 4.
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      # node-gyp needs a real node binary even though Electron ships its own.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - run: bun install --frozen-lockfile
+      # A clean checkout must be able to build with no node_modules carried over.
+      # This caught electron/vite/typescript missing from package.json entirely,
+      # which only worked locally because the tree already had them.
+      - run: bun run setup
+
+      - run: bun run typecheck
+      - run: bun test test/
+
+      # Electron needs a display. xvfb gives the smoke harnesses a real renderer
+      # to drive rather than skipping them, which would defeat the point.
+      - name: smoke (IPC bridge)
+        run: xvfb-run -a --server-args="-screen 0 1280x1024x24" bun run smoke
+      - name: smoke (tray residency + graceful quit)
+        run: xvfb-run -a --server-args="-screen 0 1280x1024x24" bun run smoke:lifecycle
+
+      # out/main/index.js should hold our code only. If a dependency gets bundled
+      # (electron's launcher stub, or better-sqlite3's loader) it balloons and the
+      # app fails at runtime with a misleading error. See PLAN.md §11.6.
+      - name: assert deps stayed external
+        run: |
+          size=$(stat -c%s out/main/index.js)
+          echo "out/main/index.js = $size bytes"
+          test "$size" -lt 200000 || { echo "main bundle too large - a dependency was bundled"; exit 1; }
+          ! grep -q "failed to install correctly" out/main/index.js || { echo "electron stub bundled"; exit 1; }
+          ! grep -q "better_sqlite3.node" out/main/index.js || { echo "better-sqlite3 bundled"; exit 1; }
+
+  build:
+    needs: check
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux
+          - os: windows-latest
+            platform: win
+          - os: macos-latest
+            platform: mac
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - run: bun install --frozen-lockfile
+      - run: bun run setup
+
+      - name: build installers
+        run: bun run dist:${{ matrix.platform }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Signing runs only when the secrets exist, so forks and unsigned local
+          # builds still produce working (if unsigned) artifacts.
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wa-askable-${{ matrix.platform }}
+          path: |
+            release/*.exe
+            release/*.dmg
+            release/*.zip
+            release/*.AppImage
+            release/*.deb
+          if-no-files-found: error
+          retention-days: 14

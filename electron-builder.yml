@@ -1,0 +1,94 @@
+appId: com.hadywalied.wa-askable
+productName: wa-askable
+copyright: Personal WhatsApp archive
+
+directories:
+  buildResources: build
+  output: release
+
+# Ship only the built output plus runtime deps. Everything Vite already bundled
+# into out/ is excluded, or it would be packaged twice.
+files:
+  - out/**
+  - package.json
+  - '!src/*'
+  - '!test/*'
+  - '!extracted/*'
+  - '!release/*'
+  - '!**/{.vscode,.github,.idea}'
+  - '!electron.vite.config.{js,ts,mjs,cjs}'
+  - '!{tsconfig.json,bun.lock,PLAN.md,files.zip,.gitignore}'
+
+# A .node binary cannot be loaded from inside an asar archive. better-sqlite3 v13
+# is N-API with prebuildify binaries under prebuilds/, so those must sit on the
+# real filesystem. When onnxruntime-node and a whisper binding arrive in Phase 5,
+# they land here too — see PLAN.md §5.4.
+asar: true
+asarUnpack:
+  - '**/*.node'
+  - node_modules/better-sqlite3/**
+
+# We rebuild native modules ourselves in `postinstall` (and better-sqlite3 ships
+# ABI-stable N-API prebuilds anyway). Letting electron-builder run its own npm
+# rebuild here just invites it to fight Bun's node_modules layout.
+npmRebuild: false
+
+win:
+  files:
+    - '!node_modules/better-sqlite3/prebuilds/{darwin,linux,linuxmusl}-*'
+  target:
+    - target: nsis
+      arch: [x64, arm64]
+  executableName: wa-askable
+  icon: build/icon.png
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: always
+  shortcutName: wa-askable
+  artifactName: ${name}-${version}-setup-${arch}.${ext}
+  # The archive holds other people's private messages and WhatsApp credentials.
+  # Deleting it silently on uninstall would be wrong; leaving it without saying
+  # so would also be wrong. The app tells the user where it is instead.
+  deleteAppDataOnUninstall: false
+
+mac:
+  files:
+    - '!node_modules/better-sqlite3/prebuilds/{win32,linux,linuxmusl}-*'
+  target:
+    - target: dmg
+      arch: [x64, arm64]
+    - target: zip
+      arch: [x64, arm64]
+  category: public.app-category.productivity
+  icon: build/icon.png
+  # Hardened runtime is required for notarization. Signing is configured in CI
+  # only when the certificate secrets are present — see .github/workflows.
+  hardenedRuntime: true
+  gatekeeperAssess: false
+
+dmg:
+  artifactName: ${name}-${version}-${arch}.${ext}
+
+linux:
+  files:
+    - '!node_modules/better-sqlite3/prebuilds/{win32,darwin}-*'
+  target:
+    - target: AppImage
+      arch: [x64, arm64]
+    - target: deb
+      arch: [x64, arm64]
+  category: Utility
+  icon: build/icon.png
+  maintainer: hadywalied
+  description: A local archive of your WhatsApp, and a way to ask it questions.
+
+appImage:
+  artifactName: ${name}-${version}-${arch}.${ext}
+
+# No auto-update server is configured. electron-updater can be added once there
+# is somewhere to publish to and a signing identity to trust; until then a
+# half-wired updater is worse than none.
+publish: null

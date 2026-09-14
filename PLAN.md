@@ -220,7 +220,7 @@ becomes a live instruction.
 - `chmod 0700` is a **no-op on Windows** — add an ACL check or drop the claim on that platform.
 - Exit: a non-technical user can install, link, and ask a question.
 
-### Phase 4 — Standalone packaging
+### Phase 4 — Standalone packaging ✅ **COMPLETE**
 - `electron-builder`: macOS `dmg`+`zip`, Windows `nsis`, Linux `AppImage`+`deb`.
 - `asar: true`, with native `.node` binaries and the `sqlite-vec` extension in `asarUnpack`.
 - **Cross-compiling signed builds is not a thing** — macOS builds on macOS, Windows on Windows.
@@ -771,3 +771,106 @@ list covers all three targets. `defaultPath` is the current workspace.
   read-only tools" when `TOOL_DEFINITIONS` has three. Rewrite it at Phase 4 as the handover doc.
 - Model is a free-text field. A list fetched from the API would be friendlier, but it must stay
   typeable for models the picker does not know about.
+
+---
+
+## 16. Phase 4 build log
+
+New: `electron-builder.yml`, `.github/workflows/build.yml`, `scripts/postinstall.mjs`,
+`build/icon.png`. README rewritten as the handover doc.
+
+### 16.1 The repo could not be installed from scratch — and it was committed that way
+
+`electron`, `electron-vite`, `vite`, `typescript`, `@electron/rebuild` and `@types/node` were
+**installed in node_modules but never recorded in package.json**. The original `bun add -d` hit a
+300s tool timeout; the packages landed, the manifest write did not. Everything worked for four
+phases purely because the local tree happened to contain them.
+
+A fresh clone — or CI — would have failed immediately. Found only by building on a second
+machine-equivalent (a clean copy on another filesystem). **CI now runs `bun run setup` after
+`bun install --frozen-lockfile` precisely so this class of bug fails the build, not a user.**
+
+Lesson worth keeping: a tool timeout that moves a command to the background can lose a partial
+write. Verify the manifest, not just that the command eventually exited 0.
+
+### 16.2 Packaging on `/mnt/d` (drvfs) is unusable; on ext4 it is 8 seconds
+
+electron-builder reports:
+
+> note: bun does not support any CLI for dependency tree extraction, utilizing file traversal
+> collector instead
+
+So it walks `node_modules` by hand. Measured, same config, same machine:
+
+| | `/mnt/d` (drvfs) | `~/` (ext4) |
+|---|---|---|
+| `bun install` (clean) | minutes | **3.97s** |
+| `electron-vite build` | ~2s | **0.52s** |
+| `electron-builder --dir` | **>15 min, never finished** | **8.16s** |
+
+**This is the filesystem, not Bun.** Bun's traversal is fine on a normal disk. §2.4's escape
+hatch (switch installs to npm) is therefore *not* triggered — the fix is where the repo lives.
+
+**Recommendation: move the working copy to the WSL filesystem.** Local packaging is impractical
+from `/mnt/d`. CI runners use native disks and are unaffected.
+
+### 16.3 `postinstall` had to become a script
+
+Bun does not reliably run Electron's own binary-download postinstall (§11.4), so it must be
+invoked explicitly — but Bun may also run the *root* postinstall before `node_modules/electron`
+is linked, and then the explicit call fails with `MODULE_NOT_FOUND` and **aborts the whole
+install**, leaving a half-populated tree. That is exactly what happened on the clean-install test.
+
+`scripts/postinstall.mjs` guards every step and degrades to a warning; `bun run setup --strict`
+runs the same steps and fails loudly, which is what you want when repairing an install rather
+than performing one.
+
+### 16.4 Blocked lifecycle scripts on a clean install
+
+`bun pm untrusted` reported `esbuild`, `protobufjs`, `electron-winstaller`. The build survives
+without them on Linux, but **`electron-winstaller` selects a 7z architecture and is needed by the
+Windows nsis target**, so CI would have hit it. Added to `trustedDependencies`.
+
+### 16.5 asar and native binaries
+
+A `.node` cannot be loaded from inside an asar. `asarUnpack` covers `**/*.node` plus
+`node_modules/better-sqlite3/**`. Verified in a real packaged build — the app opens its database
+from `resources/app.asar.unpacked/.../prebuilds/linux-x64.node`.
+
+better-sqlite3 ships all six triples (16 MB). Per-platform `files` filters drop the foreign ones:
+a Linux build went from 8 prebuilds to 4. When Phase 5 adds `onnxruntime-node` and a whisper
+binding, they follow the same pattern.
+
+### 16.6 Artifacts built and verified
+
+```
+wa-askable-0.1.0-x86_64.AppImage   151M
+wa-askable-0.1.0-arm64.AppImage    152M
+wa-askable_0.1.0_amd64.deb         117M
+```
+
+The packaged binary was run, not just built:
+
+```
+workspace = /home/hady/.config/wa-askable/workspace   ← real packaged userData path
+bridge    = object      leaks = undefined,undefined,undefined
+afterSet  = true|false|claude-opus-5    afterClear = false|true
+```
+
+### 16.7 Signing, updates, and what is deliberately not wired
+
+- **CI matrix** (`ubuntu`/`windows`/`macos`) — signed builds cannot be cross-compiled.
+- Signing env vars (`CSC_LINK`, `APPLE_ID`, …) are referenced but optional, so forks and
+  unsigned builds still produce working artifacts. **No certificates exist yet**; macOS builds
+  will be unsigned and Gatekeeper will complain until an Apple Developer ID is added.
+- **`publish: null`** — no auto-update. `electron-updater` needs somewhere to publish and an
+  identity to trust; a half-wired updater is worse than none.
+- `deleteAppDataOnUninstall: false` — the archive holds other people's messages and WhatsApp
+  credentials. Deleting it silently on uninstall would be wrong.
+
+### 16.8 Open items
+
+- **`homepage` in package.json is a placeholder** (`github.com/hadywalied/wa-askable`) added
+  because deb packaging requires one. Point it at the real repository before publishing.
+- macOS builds are untested — no Mac available here. The CI matrix will be the first real run.
+- Linux tray support still unverified outside WSLg (§14.7).

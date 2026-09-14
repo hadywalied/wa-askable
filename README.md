@@ -2,16 +2,21 @@
 
 A local archive of your WhatsApp, and a way to ask it questions in English or Egyptian Arabic.
 
-Everything lives in one directory on your machine: the database, the WhatsApp session, the
-downloaded media. There is no server component and no account.
+A desktop app. Everything lives in one directory on your machine: the database, the WhatsApp
+session, the downloaded media. There is no server component and no account, and nothing listens
+on a port.
 
 ```bash
-cp .env.example .env      # optional — see "Two modes" below
-npm install
-npm run dev
+bun install          # runs electron's installer + rebuilds better-sqlite3
+bun run dev
 ```
 
-Open the URL it prints. It contains a one-time token; restarting the process invalidates it.
+Link it from the QR code on first run, then set an API key in **Settings** if you want the
+Franco transliteration, English glosses and the chatbot. Without one it stays in local-only
+mode, which is a real mode — see "Two modes".
+
+**It records from the moment you link it and not a second earlier.** Nothing before that can be
+recovered. Link it early, and leave it running.
 
 ---
 
@@ -23,7 +28,7 @@ Open the URL it prints. It contains a one-time token; restarting the process inv
 | **Fold** | Arabic is normalised to one canonical spelling; prefixes like `لل` and `وال` are stripped into searchable stems. |
 | **Enrich** | Franco-Arab (`3ashan`) is transliterated to Arabic script, and every message gets a short English gloss. |
 | **Search** | SQLite FTS5 over three columns — Arabic, English, and stems — so a question in either language reaches the same message. |
-| **Ask** | An agent with four read-only tools: list chats, search with filters, read around a hit, and try again. |
+| **Ask** | An agent with three read-only tools: list chats, search with filters, and read around a hit. |
 
 ### The refresh button does not fetch messages
 
@@ -34,11 +39,19 @@ Worth internalising before you change anything. While connected, messages arrive
 The only history you will ever get is the partial blob WhatsApp pushes just after you link.
 Everything else is the future. Link it early.
 
+### It lives in the tray, and that is the point
+
+Closing the window hides it; the app keeps capturing. Quitting from the tray menu stops capture,
+and nothing fills the gap afterwards — which is why that menu item is labelled
+**"Quit (stops capturing)"**. It starts at login by default. The tray icon is the only place you
+will notice that capture has stopped: **red means the phone unlinked the device and you are no
+longer recording.**
+
 ---
 
 ## Two modes
 
-**Local only** (no `ANTHROPIC_API_KEY`) — capture, folding, stemming and keyword search all work.
+**Local only** (no API key) — capture, folding, stemming and keyword search all work.
 Nothing leaves your machine, at all. Franco transliteration, English glosses and the chatbot are
 off. This is a real mode, not a degraded one.
 
@@ -47,30 +60,37 @@ deliberate about this: it means your contacts' messages leave your machine. If t
 acceptable, stay in local-only mode, or swap `Enricher` for a local model — it's one class with
 two methods.
 
+Switching between the two is live. Pasting or clearing a key in Settings takes effect
+immediately; the WhatsApp connection is deliberately left alone so you never drop messages over
+a configuration change.
+
+The key is encrypted with the OS keystore (Keychain / DPAPI / libsecret) and written to
+`secret.bin` in the app's data directory. It is never stored in `settings.json`, and it is never
+readable from the UI — the settings screen only knows *whether* a key is set. If no keystore is
+available, the key is kept in memory for that session only and the app tells you so, rather than
+writing a secret to disk in the clear. `ANTHROPIC_API_KEY` in the environment still wins, for
+development.
+
 ---
 
 ## Security
 
-"It runs locally" is not a security model. Three specific things, two of which the code handles:
+"It runs locally" is not a security model.
 
-**1. Any website you visit can call `http://127.0.0.1:4317`.** A page in another tab can fire
-`fetch()` at this server. Without a check it would happily return your entire message history.
-Handled two ways: a per-process token the browser only gets by loading our own page, and a
-`Sec-Fetch-Site` / `Origin` check that rejects anything a different site initiated. Verify it:
+**There is no HTTP server any more.** The earlier version listened on `127.0.0.1:4317` and had to
+defend that port — any website in any other tab can `fetch()` at localhost — with a per-process
+token and a `Sec-Fetch-Site` check. The desktop app talks over Electron IPC instead, so that
+entire class of attack is gone rather than mitigated. The renderer runs sandboxed, context-
+isolated, with no Node integration, under a strict CSP, and sees exactly the named calls in
+`src/preload/index.ts` and nothing else.
 
-```bash
-curl -s -o /dev/null -w '%{http_code}\n' localhost:4317/api/status                  # 401
-curl -s -H "Sec-Fetch-Site: cross-site" -H "x-session-token: $T" ... /api/status    # 403
-```
+**The `auth/` directory is a full WhatsApp account takeover.** Anyone who reads those files can
+impersonate you. The app sets `0700`, writes a `.gitignore`, and warns you if the workspace sits
+inside a git repo or a synced cloud folder. On **Windows** those POSIX bits do nothing — the app
+says so instead of pretending otherwise; there your protection is your user profile's ACLs plus
+BitLocker, and keeping the folder out of OneDrive.
 
-**2. Binding to `0.0.0.0` publishes the archive to the local network.** `assertLoopback()`
-refuses to start on anything but the loopback address. If you genuinely need remote access, use
-an SSH tunnel rather than editing that function.
-
-**3. The `auth/` directory is a full WhatsApp account takeover.** Anyone who reads those files can
-impersonate you. The code sets `0700` and writes a `.gitignore`, and warns you if the workspace
-sits inside a git repo or a synced cloud folder — but an encrypted disk is your job, not the
-code's.
+An encrypted disk is your job, not the code's.
 
 **On sharing this with a peer:** you're sharing *code*, not data. They pair their own WhatsApp and
 get their own empty archive. Never send anyone your `workspace/`.
@@ -103,20 +123,38 @@ you later give it the ability to *act*, a message in some group becomes a live i
 
 ```
 src/
-  core/
+  core/            unchanged from the server version — the app is a shell around this
     normalize.ts   Arabic folding, Franco detection, proclitic stemming  (11 tests)
     db.ts          SQLite schema, FTS5, content-hash media dedup
-    whatsapp.ts    Baileys companion-device client
+    whatsapp.ts    Baileys client + reconnect backoff  (5 tests)
     enrich.ts      Gloss worker + the agent tool loop
     search.ts      The three tools the agent may call
     workspace.ts   Directory layout + safety audit
-  server/
-    security.ts    Token auth, cross-site blocking, loopback enforcement
-    app.ts         Routes
-  ui/index.html    The whole interface — no build step, so it's easy to hand over
+  main/            Electron main process
+    index.ts       lifecycle, tray residency, power/network reconnect triggers
+    ipc.ts         the nine channels that replaced the HTTP routes
+    settings.ts    settings + OS-keystore key storage + autostart
+    tray.ts        tray icon, status badge, menu
+    config.ts      runtime config, rebuilt on every settings change
+  preload/index.ts the ONLY surface the renderer sees (sandboxed, CommonJS)
+  shared/ipc.ts    the IPC contract
+  renderer/        index.html + app.js — kept script-free of inline code for the CSP
 ```
 
-`npm test` · `npm run typecheck` · `npm run build`
+| | |
+|---|---|
+| `bun run dev` | run it |
+| `bun test` | 16 unit tests |
+| `bun run typecheck` | |
+| `bun run smoke` | drives the real IPC bridge from inside the renderer |
+| `bun run smoke:lifecycle` | asserts closing hides rather than quits, and quits cleanly |
+| `bun run dist` | installers into `release/` for the current OS |
+
+Installers for all three platforms are built by `.github/workflows/build.yml` — signed builds
+cannot be cross-compiled, so each OS builds on its own runner.
+
+**`PLAN.md` is the design document**: why Electron over Tauri/PySide6, why the HTTP server was
+deleted rather than wrapped, and a build log of every trap hit along the way.
 
 ---
 
