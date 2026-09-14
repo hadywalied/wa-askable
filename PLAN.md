@@ -1355,3 +1355,55 @@ so the wording cannot drift.
 
 Layout regressions are invisible to typecheck, so the smoke harness now asserts the sidebar
 toggles and that the pane max-width is no longer the 640px that caused this.
+
+---
+
+## 26. v0.7.0 — the test harness was corrupting real settings
+
+### 26.1 The "capture" bug was mine
+
+Reported as: ticking **Direct chats** saved **Broadcast lists**. The capture logic was never
+wrong. The smoke harness was writing to the user's real `settings.json`, leaving
+`group/community/broadcast` off and every media type but text off — state no one had chosen, read
+afterwards as a broken toggle.
+
+§21.4 recorded this exact risk — *"the smoke harness shares the real userData directory… it should
+run with `app.setPath('userData', tmp)`"* — and it was left open. It had already clobbered
+`lastWorkspace` twice, making a real archive look deleted. **Writing the risk down is not
+mitigating it.**
+
+Fixed at the only point early enough to matter: under `WA_SMOKE`, `userData` and `sessionData` are
+redirected to a throwaway directory before anything reads a path. Isolating the *workspace* was
+never enough, because `settings.json` does not live there. The harness now asserts nothing outside
+the sandbox changed, by diffing the real settings file across a run.
+
+### 26.2 Proving the logic was innocent
+
+`toggleCapture()` is extracted from the DOM handler and unit-tested: a toggle changes only the key
+it names, the input filter is never mutated, and the last source or media type cannot be removed.
+Eight tests, including the exact reported shape. 52 total.
+
+Worth noting: my first version of "turning off the last source is refused" **failed**, and the
+test was wrong, not the code — the third toggle is already refused, so the fourth legitimately
+succeeds. A regression test asserting the wrong thing is worse than none.
+
+### 26.3 Import / export
+
+`Settings → About → Export settings…` writes provider, capture filters and autostart as JSON.
+**The API key is deliberately excluded**: an export is a file people mail to themselves and drop
+in cloud storage, and a plaintext credential in it would outlive every protection the encrypted
+store provides. Import applies field by field and ignores anything unrecognised, so a file from a
+future version cannot corrupt state.
+
+### 26.4 Sync now
+
+"Get messages now" returning *"Nothing captured yet to reach back from"* was correct but useless:
+on-demand history needs an anchor message, and the archive had just been emptied. It is now
+**Sync from phone now**, which does three separate things and reports each:
+
+- `resyncAppState` — the address book and chat metadata. **This is where contacts actually live**,
+  and its absence is why 1,339 messages yielded two known people.
+- `groupFetchAllParticipating` — group subjects and participant lists.
+- `fetchMessageHistory` — the backfill, the only part needing an anchor.
+
+Reported piece by piece, so a partial success is not shown as a failure.

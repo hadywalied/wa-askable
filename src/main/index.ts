@@ -1,4 +1,6 @@
 import { app, BrowserWindow, net, powerMonitor, session } from 'electron';
+import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadConfig } from './config.js';
@@ -26,6 +28,21 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 
 // Two processes on one SQLite WAL and one auth/ directory is corruption plus a
 // possible WhatsApp unlink.
+// Test isolation, set BEFORE anything reads a path.
+//
+// The harness previously shared the real userData directory, so it wrote to the
+// user's own settings.json — it clobbered lastWorkspace (making a real archive
+// look like it had vanished) and left capture filters switched off, which was
+// then reported as a capture bug. Isolating the workspace was not enough
+// because the settings file lives here, not there. One line, at the only point
+// early enough to matter.
+if (process.env.WA_SMOKE) {
+  const sandbox = path.join(os.tmpdir(), `wa-smoke-userdata-${Date.now()}`);
+  fs.mkdirSync(sandbox, { recursive: true });
+  app.setPath('userData', sandbox);
+  app.setPath('sessionData', sandbox);
+}
+
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) app.quit();
 
@@ -223,9 +240,7 @@ async function runLifecycleTest(win: BrowserWindow): Promise<void> {
 }
 
 async function runSmokeTest(win: BrowserWindow): Promise<void> {
-  const testWorkspace = path.join(app.getPath('temp'), `wa-smoke-${Date.now()}`);
   const script = `(async () => {
-    const WA_TEST_WORKSPACE = ${JSON.stringify(testWorkspace)};
     const out = { bridge: typeof window.wa };
     const $ = (id) => document.getElementById(id);
 
@@ -248,9 +263,9 @@ async function runSmokeTest(win: BrowserWindow): Promise<void> {
 
     // --- core IPC ------------------------------------------------------
     out.session = await window.wa.getSession();
-    // Never the default workspace: opening it rewrites lastWorkspace, and a
-    // real user's next launch would land on an empty archive. Isolate the test.
-    const opened = await window.wa.openWorkspace(WA_TEST_WORKSPACE);
+    // Safe now: userData is a throwaway sandbox under WA_SMOKE, so the default
+    // workspace and settings.json both live inside it.
+    const opened = await window.wa.openWorkspace('');
     out.workspace = opened.workspace;
     out.warnings = opened.warnings.length;
     out.status = (await window.wa.getStatus()).connection.state;

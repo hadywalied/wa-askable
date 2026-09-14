@@ -41,6 +41,9 @@ export const CHANNELS = {
   wsReset: 'ws:reset',
   wsCompact: 'ws:compact',
   waFetchOlder: 'wa:fetch-older',
+  waSyncNow: 'wa:sync-now',
+  settingsExport: 'settings:export',
+  settingsImport: 'settings:import',
 } as const;
 
 /** Pushed from main; the renderer no longer polls. */

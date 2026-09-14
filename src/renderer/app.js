@@ -1,5 +1,5 @@
 import { mountLink } from './link.js';
-import { SOURCE_LABELS, MEDIA_LABELS } from '../shared/capture.js';
+import { SOURCE_LABELS, MEDIA_LABELS, toggleCapture } from '../shared/capture.js';
 
 // There is no server, no port and no session token. Everything goes over the
 // contextBridge in preload/index.ts — a fixed set of named calls.
@@ -619,14 +619,32 @@ $('wsReset').onclick = () =>
  * so the wording cannot drift: this is a request to the phone, and a silent no
  * is a normal outcome, not a failure.
  */
+/**
+ * Pull whatever the phone will give: address book, group metadata, and older
+ * messages. Reported piece by piece, because these succeed independently and
+ * "nothing captured yet to reach back from" is a true statement about message
+ * history that says nothing about the contacts we just recovered.
+ */
 async function requestOlder(btn, out) {
   btn.disabled = true;
-  out.textContent = 'Asking your phone for older messages…';
+  out.textContent = 'Asking your phone…';
   try {
-    const r = await wa.fetchOlder(50);
-    out.textContent = r.requested
-      ? 'Requested. Anything WhatsApp sends will arrive over the next few moments — if nothing appears, your phone has no more to give.'
-      : r.reason || 'Could not request older messages.';
+    const r = await wa.syncNow(50);
+    const parts = [];
+    if (r.appState) parts.push('address book resynced');
+    if (r.groups) parts.push(`${fmt(r.groups)} groups refreshed`);
+    if (typeof r.contacts === 'number') parts.push(`${fmt(r.contacts)} people known`);
+    if (r.historyRequested) {
+      parts.push('older messages requested — they arrive over the next few moments');
+    } else if (r.reason) {
+      parts.push(
+        r.reason.startsWith('Nothing captured')
+          ? 'no older messages to request yet: WhatsApp needs an existing message to reach back from, so this fills in once some arrive'
+          : r.reason,
+      );
+    }
+    out.textContent = parts.length ? parts.join(' · ') + '.' : 'Nothing to sync.';
+    await loadChats();
   } catch (e) {
     out.textContent = e.message;
   }
@@ -634,6 +652,26 @@ async function requestOlder(btn, out) {
 }
 $('fetchOlder').onclick = () => requestOlder($('fetchOlder'), $('fetchOlderOut'));
 $('ctlFetch').onclick = () => requestOlder($('ctlFetch'), $('ctlNote'));
+
+$('exportSettings').onclick = async () => {
+  try {
+    const r = await wa.exportSettings();
+    $('portNote').textContent = r.saved
+      ? `Exported to ${r.path}. The API key was not included — set it again after importing.`
+      : '';
+  } catch (e) { $('portNote').textContent = e.message; }
+};
+
+$('importSettings').onclick = async () => {
+  try {
+    const r = await wa.importSettings();
+    if (!r.imported) return;
+    paintSettings(await wa.getSettings());
+    $('portNote').textContent =
+      `Imported: ${r.applied.join(', ')}.` +
+      (r.needsKey ? ' Add your API key in Settings → AI provider.' : '');
+  } catch (e) { $('portNote').textContent = e.message; }
+};
 
 $('openLogs').onclick = () => wa.openLogs();
 $('copyDiag').onclick = async () => {
@@ -709,22 +747,19 @@ function paintCapture(s) {
 async function onCaptureToggle(e) {
   const el = e.target.closest('[data-cap]');
   if (!el) return;
-  const capture = structuredClone(state.settings.capture);
-  capture[el.dataset.cap][el.dataset.key] = el.checked;
-
-  // Turning everything off in a group silently stops all capture, which looks
-  // identical to the app being broken. Refuse it and say why.
-  const anySource = Object.values(capture.sources).some(Boolean);
-  const anyMedia = Object.values(capture.media).some(Boolean);
-  if (!anySource || !anyMedia) {
+  const { filter, ok, reason } = toggleCapture(
+    state.settings.capture,
+    el.dataset.cap,
+    el.dataset.key,
+    el.checked,
+  );
+  if (!ok) {
     el.checked = !el.checked;
-    $('captureNote').textContent = !anySource
-      ? 'Keep at least one kind of conversation, or nothing is archived at all.'
-      : 'Keep at least one message type, or nothing is archived at all.';
+    $('captureNote').textContent = reason;
     return;
   }
   $('captureNote').textContent = 'Saved. Applies to messages arriving from now on.';
-  paintSettings(await wa.saveSettings({ capture }));
+  paintSettings(await wa.saveSettings({ capture: filter }));
 }
 $('captureSources').addEventListener('change', onCaptureToggle);
 $('captureMedia').addEventListener('change', onCaptureToggle);

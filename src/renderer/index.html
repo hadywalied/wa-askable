@@ -245,10 +245,12 @@
             <p class="hint">Retries immediately instead of waiting out the backoff.</p>
           </div>
           <div>
-            <button id="ctlFetch" class="primary">Get messages now</button>
+            <button id="ctlFetch" class="primary">Sync from phone now</button>
             <p class="hint">
-              Asks your phone to push messages older than the oldest one here. New messages
-              already arrive on their own while you stay linked — this is for reaching backwards.
+              Pulls your address book and group details, then asks for messages older than the
+              oldest one here. New messages arrive on their own while you stay linked — this is
+              for names and for reaching backwards. Message backfill needs at least one existing
+              message to reach back from.
             </p>
           </div>
           <div>
@@ -302,7 +304,7 @@
           to hand over, and eventually returns nothing because the phone has no more to give.
         </p>
         <div class="ob-actions left">
-          <button id="fetchOlder" class="primary">Request older messages</button>
+          <button id="fetchOlder" class="primary">Sync from phone now</button>
         </div>
         <p class="hint" id="fetchOlderOut"></p>
 
@@ -415,6 +417,19 @@
           The app only captures while it is running. Messages that arrive while it is closed are
           lost permanently — there is no backfill.
         </p>
+        <h3 style="margin-top:26px">Settings file</h3>
+        <p class="hint">
+          Move your configuration between machines. The API key is deliberately not included —
+          an export is a file people mail to themselves, and a plaintext credential in it would
+          outlive every protection the encrypted store gives it.
+        </p>
+        <div class="ob-actions left">
+          <button id="exportSettings" class="ghost">Export settings…</button>
+          <button id="importSettings" class="ghost">Import settings…</button>
+        </div>
+        <p class="hint" id="portNote"></p>
+
+        <h3 style="margin-top:26px">Diagnostics</h3>
         <div class="ob-actions left">
           <button id="openLogs" class="ghost">Open log file</button>
           <button id="copyDiag" class="ghost">Copy diagnostics</button>

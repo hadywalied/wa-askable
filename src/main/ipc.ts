@@ -27,9 +27,10 @@ import {
 import { Enricher, ask } from '../core/enrich.js';
 import { listChats, searchMessages } from '../core/search.js';
 import { shell } from 'electron';
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { log, logPath } from './log.js';
 import { PROVIDER_PRESETS, isLocalEndpoint, presetById } from '../shared/providers.js';
+import type { CaptureFilter } from '../shared/capture.js';
 import {
   CHANNELS,
   EVENTS,
@@ -278,6 +279,92 @@ export function registerIpc(initial: Config): void {
     return describeSettings(message);
   });
 
+  /**
+   * Export settings to a file.
+   *
+   * The API key is deliberately NOT included. An export is a file people mail
+   * to themselves and drop in cloud storage; a plaintext credential in it would
+   * outlive every protection the encrypted store provides.
+   */
+  ipcMain.handle(CHANNELS.settingsExport, async (e) => {
+    const parent = BrowserWindow.fromWebContents(e.sender) ?? undefined;
+    const res = await dialog.showSaveDialog(parent!, {
+      title: 'Export settings',
+      defaultPath: 'wa-askable-settings.json',
+      filters: [{ name: 'JSON', extensions: ['json'] }],
+    });
+    if (res.canceled || !res.filePath) return { saved: false };
+
+    const s = getSettings();
+    const payload = {
+      app: 'wa-askable',
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      settings: {
+        openAtLogin: s.openAtLogin,
+        model: cfg.model,
+        providerId: cfg.providerId,
+        providerKind: cfg.providerKind,
+        baseUrl: cfg.baseUrl,
+        capture: s.capture,
+      },
+      note: 'The API key is intentionally not exported. Set it again after importing.',
+    };
+    writeFileSync(res.filePath, JSON.stringify(payload, null, 2), { mode: 0o600 });
+    log('settings', `exported to ${res.filePath}`);
+    return { saved: true, path: res.filePath };
+  });
+
+  ipcMain.handle(CHANNELS.settingsImport, async (e) => {
+    const parent = BrowserWindow.fromWebContents(e.sender) ?? undefined;
+    const res = await dialog.showOpenDialog(parent!, {
+      title: 'Import settings',
+      filters: [{ name: 'JSON', extensions: ['json'] }],
+      properties: ['openFile'],
+    });
+    if (res.canceled || !res.filePaths[0]) return { imported: false };
+
+    let parsed: { app?: string; settings?: Record<string, unknown> };
+    try {
+      parsed = JSON.parse(readFileSync(res.filePaths[0], 'utf8')) as typeof parsed;
+    } catch {
+      throw new Error('That file is not valid JSON.');
+    }
+    if (parsed?.app !== 'wa-askable' || !parsed.settings) {
+      throw new Error('That does not look like a wa-askable settings export.');
+    }
+
+    // Applied field by field. Anything unrecognised is ignored rather than
+    // written through, so a file from a future version cannot corrupt state.
+    const incoming = parsed.settings as {
+      openAtLogin?: boolean; model?: string; providerId?: string;
+      providerKind?: 'anthropic' | 'openai'; baseUrl?: string; capture?: CaptureFilter;
+    };
+    const applied: string[] = [];
+    if (typeof incoming.openAtLogin === 'boolean') {
+      updateSettings({ openAtLogin: applyAutostart(incoming.openAtLogin) });
+      applied.push('start at login');
+    }
+    if (incoming.capture?.sources && incoming.capture?.media) {
+      updateSettings({ capture: incoming.capture });
+      applied.push('capture filters');
+    }
+    if (incoming.providerId) {
+      await setProviderConfig({
+        providerId: incoming.providerId,
+        ...(incoming.providerKind ? { providerKind: incoming.providerKind } : {}),
+        ...(incoming.baseUrl !== undefined ? { baseUrl: incoming.baseUrl } : {}),
+        ...(incoming.model ? { model: incoming.model } : {}),
+      });
+      applied.push('AI provider');
+    }
+
+    cfg = await loadConfig();
+    rebuildProvider();
+    log('settings', `imported from ${res.filePaths[0]}: ${applied.join(', ')}`);
+    return { imported: true, applied, needsKey: !(await getApiKey()) };
+  });
+
   ipcMain.handle(CHANNELS.workspacePick, async (e) => {
     const parent = BrowserWindow.fromWebContents(e.sender) ?? undefined;
     const res = await dialog.showOpenDialog(parent!, {
@@ -444,6 +531,12 @@ export function registerIpc(initial: Config): void {
   ipcMain.handle(CHANNELS.waFetchOlder, async (_e, count?: number, chatJid?: string) =>
     need().wa.fetchOlderMessages(count ?? 50, chatJid),
   );
+
+  ipcMain.handle(CHANNELS.waSyncNow, async (_e, count?: number) => {
+    const r = await need().wa.syncNow(count ?? 50);
+    broadcast(EVENTS.stats, stats(need().db));
+    return { ...r, contacts: contactCount(need().db) };
+  });
 
   ipcMain.handle(CHANNELS.indexStop, () => {
     need().enricher.stop();

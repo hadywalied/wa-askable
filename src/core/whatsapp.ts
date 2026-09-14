@@ -267,6 +267,73 @@ export class WhatsAppArchive extends EventEmitter {
   }
 
   /**
+   * Pull everything that can be pulled on demand.
+   *
+   * Three separate mechanisms, because WhatsApp splits them:
+   *
+   *  - **App state** holds the address book and chat metadata. This is where
+   *    contacts actually live; without a resync an archive can sit on thousands
+   *    of messages and two known people, which is what happened here.
+   *  - **Group metadata** gives subjects and participant lists — often the only
+   *    place a name exists for someone who never messaged directly.
+   *  - **Message history** is the on-demand backfill, and it is the only one
+   *    that needs an anchor: the phone is told "older than this", so an empty
+   *    archive has nothing to reach back from.
+   *
+   * Reported separately so a partial success is not presented as a failure.
+   */
+  async syncNow(count = 50): Promise<{
+    appState: boolean;
+    groups: number;
+    historyRequested: boolean;
+    reason?: string;
+  }> {
+    if (!this.sock || this.status.state !== 'open') {
+      return { appState: false, groups: 0, historyRequested: false, reason: 'Not linked.' };
+    }
+
+    let appState = false;
+    try {
+      await this.sock.resyncAppState(
+        ['critical_block', 'critical_unblock_low', 'regular_high', 'regular', 'regular_low'],
+        false,
+      );
+      appState = true;
+      this.emit('log', 'app state resynced (contacts and chat metadata)');
+    } catch (err) {
+      this.emit('log', `app state resync failed: ${describeError(err)}`);
+    }
+
+    let groups = 0;
+    try {
+      const all = await this.sock.groupFetchAllParticipating();
+      for (const g of Object.values(all ?? {})) {
+        upsertChat(this.db, {
+          jid: g.id,
+          name: g.subject ?? null,
+          isGroup: true,
+          ts: Number(g.creation ?? 0) * 1000 || Date.now(),
+        });
+        for (const pt of g.participants ?? []) {
+          upsertContact(this.db, { jid: pt.id, notify: (pt as { notify?: string }).notify ?? null });
+        }
+        groups++;
+      }
+      this.emit('log', `fetched metadata for ${groups} groups`);
+    } catch (err) {
+      this.emit('log', `group metadata fetch failed: ${describeError(err)}`);
+    }
+
+    const older = await this.fetchOlderMessages(count);
+    return {
+      appState,
+      groups,
+      historyRequested: older.requested,
+      reason: older.reason,
+    };
+  }
+
+  /**
    * Ask the phone for messages older than the oldest we hold.
    *
    * WhatsApp's initial push is deliberately small. This is the on-demand sync

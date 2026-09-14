@@ -70,6 +70,9 @@ const api = {
   compact: (): Promise<{ ok: boolean }> => invoke(CHANNELS.wsCompact),
   fetchOlder: (count?: number, chatJid?: string): Promise<{ requested: boolean; reason?: string }> =>
     invoke(CHANNELS.waFetchOlder, count, chatJid),
+  syncNow: (count?: number): Promise<{
+    appState: boolean; groups: number; historyRequested: boolean; reason?: string; contacts: number;
+  }> => invoke(CHANNELS.waSyncNow, count),
   onIndexProgress: (cb: (p: { done: number; total: number }) => void): void => {
     ipcRenderer.on(EVENTS.indexProgress, (_event, payload) => cb(payload));
   },
@@ -97,6 +100,10 @@ const api = {
 
   requestPairingCode: (phone: string): Promise<{ code: string }> =>
     invoke(CHANNELS.whatsappPairingCode, phone),
+  exportSettings: (): Promise<{ saved: boolean; path?: string }> =>
+    invoke(CHANNELS.settingsExport),
+  importSettings: (): Promise<{ imported: boolean; applied?: string[]; needsKey?: boolean }> =>
+    invoke(CHANNELS.settingsImport),
   openLogs: (): Promise<{ path: string }> => invoke(CHANNELS.logsOpen),
   tailLogs: (): Promise<{ path: string; lines: string }> => invoke(CHANNELS.logsTail),
 
