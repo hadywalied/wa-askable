@@ -15,7 +15,7 @@
      for an API key before the archive exists buries the thing that matters. -->
 <div id="onboarding" class="onboarding" hidden>
   <div class="ob-card">
-    <div class="ob-progress"><i data-step="1"></i><i data-step="2"></i><i data-step="3"></i></div>
+    <div class="ob-progress"><i data-step="1"></i><i data-step="2"></i><i data-step="3"></i><i data-step="4"></i></div>
 
     <section class="ob-step" data-step="1">
       <h1>A local archive of your WhatsApp</h1>
@@ -57,9 +57,55 @@
     <section class="ob-step" data-step="3" hidden>
       <h1>Link your phone</h1>
       <div id="obLinkHost"></div>
-      <div class="ob-actions">
+      <div class="ob-actions" id="obLinkActions">
         <button class="ghost" data-goto="2">Back</button>
         <button class="ghost" id="obSkip">Skip for now</button>
+      </div>
+      <!-- Replaces Back/Skip once linked: those are the wrong options at that
+           point, and leaving them is what made the finished state look stuck. -->
+      <div class="ob-actions" id="obDoneActions" hidden>
+        <button class="primary" data-goto="4">Continue →</button>
+      </div>
+    </section>
+
+    <section class="ob-step" data-step="4" hidden>
+      <h1>Answering questions</h1>
+      <p class="lede">
+        Capture, Arabic folding and keyword search already work and need nothing further.
+        An AI provider adds Franco transliteration, English glosses, and asking questions in
+        plain language.
+      </p>
+
+      <label for="obProvider">Provider</label>
+      <select id="obProvider"></select>
+      <p class="hint" id="obProviderNote"></p>
+
+      <div id="obCustomFields" hidden>
+        <label for="obBaseUrl">API base URL</label>
+        <input type="text" id="obBaseUrl" spellcheck="false" placeholder="http://127.0.0.1:11434/v1">
+        <label for="obKind">Wire protocol</label>
+        <select id="obKind">
+          <option value="anthropic">Anthropic — /v1/messages</option>
+          <option value="openai">OpenAI-compatible — /chat/completions</option>
+        </select>
+      </div>
+
+      <label for="obModel">Model</label>
+      <input type="text" id="obModel" spellcheck="false" placeholder="claude-sonnet-5">
+
+      <label for="obKey">API key <span style="font-weight:400;opacity:.6">— not needed for a local provider</span></label>
+      <input type="password" id="obKey" spellcheck="false" autocomplete="off" placeholder="sk-…">
+
+      <div class="callout">
+        Message text — including messages other people wrote — is sent to whichever endpoint you
+        choose. Point this at <b>Ollama</b> or <b>LM Studio</b> on this machine and it never
+        leaves. You can change or remove this any time in Settings.
+      </div>
+      <p class="hint" id="obProviderMsg"></p>
+
+      <div class="ob-actions">
+        <button class="ghost" id="obSkipAi">Skip — keep everything local</button>
+        <button class="primary" id="obSaveAi">Save and finish</button>
       </div>
     </section>
   </div>
@@ -316,6 +362,10 @@
     <div data-stage="open" hidden>
       <h3>Linked and capturing</h3>
       <p data-el="opendetail">Messages are archived as they arrive.</p>
+      <p class="tiny" data-el="syncnote" hidden>
+        WhatsApp is pushing whatever recent history it will give us. This runs in the
+        background — you can start using the app now.
+      </p>
       <button class="ghost" data-act="disconnect">Unlink</button>
     </div>
 

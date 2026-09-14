@@ -1094,3 +1094,66 @@ The smoke harness still carried assertions against the *previous* design (`tabSe
 `viewArchive`) and failed with `Cannot read properties of null`. Worth noting because it is the
 same class of problem as §18: a test that references a UI that no longer exists gives no signal.
 It now walks all five settings panes, both routes, and the conversation lifecycle.
+
+---
+
+## 21. v0.3.1 — linking actually works, and then persists
+
+Three defects stood between this app and its one job. All three were ours or
+vendored, none were the environment.
+
+### 21.1 The browser identity made pairing impossible
+
+`Browsers.macOS('Desktop')` + `syncFullHistory: true` is refused by WhatsApp during companion
+registration: the Noise handshake completes, the pairing payload goes up, and the server closes
+the socket (428) before issuing a QR. **3/3 failures with that pair, 3/3 successes without it**,
+on Baileys 6.17 and 7.0.0-rc14, on both WSL and Windows network stacks.
+
+The original code chose that identity to coax a larger history blob out of WhatsApp. A bigger
+blob is worth nothing if the device can never link.
+
+**How long I spent blaming the environment is the lesson.** A raw WebSocket upgrade to
+`web.whatsapp.com/ws/chat` returns `101 Switching Protocols` from this machine, and running the
+same script under **Windows Node on the Windows network stack** failed identically — either check
+would have killed the WSL theory immediately. I asserted it instead of testing it.
+
+### 21.2 `companion_reg_refresh` — pairing completed but never persisted
+
+Since late July 2026 WhatsApp retires an unpaired companion's registration material mid-flow with
+`<notification type='companion_reg_refresh'>`. Baileys acks and discards it. Worse, it reads
+`advSecretKey` **once** when the pairing flow starts, so every QR rendered afterwards advertises a
+secret the server has already thrown away.
+
+The visible result is strange and misleading: pairing *appears* to work — a real session, real
+messages (866 captured here) — but `pair-success` never arrives, `creds.registered` stays
+**false**, and the next launch therefore starts a fresh registration and **overwrites the working
+credentials**. Capture silently stops surviving restarts.
+
+Upstream issue #2737 is open; fix PR #2765 is confirmed working but unmerged, and upstream has not
+published since 2026-07-29. **No published build handles it** — verified by grepping 6.17.16,
+7.0.0-rc14 and four maintained forks: zero hits.
+
+So it is implemented here instead, in our layer rather than by patching a compiled dependency. The
+QR payload is `[ref, noiseKey, identityKey, advSecret, platform]`, so:
+
+- every QR we render substitutes the **current** `advSecretKey` before display, regardless of what
+  Baileys captured;
+- on the refresh notification we rotate the secret, persist it, and re-render **the same ref** —
+  spending a fresh one would drain the server's allotment and end the flow with
+  "QR refs attempts ended".
+
+### 21.3 A half-paired state destroyed a working session
+
+Because `registered` stays false, the next launch re-registers and overwrites `creds.json`. There
+was no backup, so a session that had captured 866 messages was gone. `creds.json.last-good` is now
+written after every connection that reaches `open`.
+
+### 21.4 Test isolation — the harness damaged real data twice
+
+`bun run smoke` called `openWorkspace('')`, which opens the **default** workspace and rewrites
+`lastWorkspace`. A real user's next launch then lands on an empty archive and looks like total
+data loss. Isolating the workspace path was not enough — the setting is still persisted — so the
+harness now uses its own temp workspace and the remaining gap is noted below.
+
+**Still open:** the smoke harness shares the real `userData` directory, so it can still touch
+settings. It should run with `app.setPath('userData', tmp)` under `WA_SMOKE`.

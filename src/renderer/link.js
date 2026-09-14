@@ -27,10 +27,15 @@ export function mountLink(host, wa, opts = {}) {
     if (c.state === 'open') {
       manualStage = null;
       show('open');
-      el('opendetail').textContent = c.capturedThisSession
-        ? `${c.capturedThisSession} messages captured this session.`
-        : 'Messages are archived as they arrive.';
-      opts.onLinked?.();
+      const n = c.capturedThisSession;
+      el('opendetail').textContent = n
+        ? `${n.toLocaleString()} messages captured so far.`
+        : 'Waiting for the first messages to arrive.';
+      // The count climbing is the only signal that the history import is doing
+      // something; say so rather than letting it look frozen.
+      const sync = el('syncnote');
+      if (sync) sync.hidden = n < 1;
+      opts.onLinked?.(c);
       return;
     }
     if (c.qrDataUrl) {

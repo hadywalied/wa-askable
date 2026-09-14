@@ -223,7 +223,9 @@ async function runLifecycleTest(win: BrowserWindow): Promise<void> {
 }
 
 async function runSmokeTest(win: BrowserWindow): Promise<void> {
+  const testWorkspace = path.join(app.getPath('temp'), `wa-smoke-${Date.now()}`);
   const script = `(async () => {
+    const WA_TEST_WORKSPACE = ${JSON.stringify(testWorkspace)};
     const out = { bridge: typeof window.wa };
     const $ = (id) => document.getElementById(id);
 
@@ -233,10 +235,22 @@ async function runSmokeTest(win: BrowserWindow): Promise<void> {
       await new Promise((r) => setTimeout(r, 50));
     }
     out.onboardingShown = !$('onboarding').hidden;
+    // Regression guard: a CSS display rule silently defeated the hidden
+    // attribute, so the overlay stayed on top and Skip looked dead.
+    out.hiddenWorks = (() => {
+      const ob = $('onboarding');
+      const was = ob.hidden;
+      ob.hidden = true;
+      const ok = getComputedStyle(ob).display === 'none';
+      ob.hidden = was;
+      return ok;
+    })();
 
     // --- core IPC ------------------------------------------------------
     out.session = await window.wa.getSession();
-    const opened = await window.wa.openWorkspace('');
+    // Never the default workspace: opening it rewrites lastWorkspace, and a
+    // real user's next launch would land on an empty archive. Isolate the test.
+    const opened = await window.wa.openWorkspace(WA_TEST_WORKSPACE);
     out.workspace = opened.workspace;
     out.warnings = opened.warnings.length;
     out.status = (await window.wa.getStatus()).connection.state;
@@ -264,7 +278,19 @@ async function runSmokeTest(win: BrowserWindow): Promise<void> {
     out.afterClear = [s2.hasKey, s2.localOnly].join('|');
 
     // --- redesign: shell, routing, panes, conversations ----------------
-    $('obSkip') && $('obSkip').click();
+    // Exercise onboarding regardless of whether this archive is fresh: the
+    // steps must work, and tying the test to app state means it silently stops
+    // testing anything the moment there is data.
+    out.obSteps = document.querySelectorAll('.ob-step').length;
+    $('onboarding').hidden = false;
+    document.querySelector('[data-goto="4"]').click();
+    out.obStep4Visible = !document.querySelector('.ob-step[data-step="4"]').hidden;
+    out.obProviderOptions = $('obProvider').options.length;
+    $('obProvider').value = 'ollama';
+    $('obProvider').dispatchEvent(new Event('change'));
+    out.obPresetApplied = $('obCustomFields').hidden && $('obProviderNote').textContent.length > 0;
+    $('obSkipAi').click();
+    out.obFinished = $('onboarding').hidden;
     out.shellVisible = !$('shell').hidden;
 
     document.querySelector('.nav-item[data-view="settings"]').click();

@@ -18,6 +18,11 @@
   }
 }
 *{box-sizing:border-box}
+/* The `hidden` attribute only works through a UA default of display:none, so ANY
+   explicit display rule silently defeats it. That is exactly what happened to
+   .onboarding (display:grid): Skip and the post-link handoff both fired, and the
+   overlay just stayed on top at z-index 50. Make hidden mean hidden, everywhere. */
+[hidden]{display:none !important}
 html,body{height:100%}
 body{margin:0;background:var(--paper);color:var(--ink);font:15px/1.55 var(--sans);
   overflow:hidden}
@@ -79,7 +84,6 @@ label{display:block;font-weight:600;font-size:13px;margin:16px 0 5px}
 /* ---------- content ---------- */
 .content{overflow:hidden;display:flex;flex-direction:column}
 .view{display:flex;flex-direction:column;min-height:0;flex:1;padding:26px 30px}
-.view[hidden]{display:none}
 .view-head{margin-bottom:18px}
 .view-head h2{font-size:21px;letter-spacing:-.01em}
 .sub{color:var(--soft);font-size:14px;margin:5px 0 0}
@@ -145,7 +149,6 @@ label{display:block;font-weight:600;font-size:13px;margin:16px 0 5px}
 .subnav button:hover{color:var(--ink)}
 .subnav button.active{color:var(--deep);border-bottom-color:var(--teal);font-weight:600}
 .pane{overflow-y:auto;padding-bottom:30px;max-width:640px}
-.pane[hidden]{display:none}
 .pane h3{font-size:16px;margin-bottom:6px}
 .ledger,.stat-row{display:flex;gap:10px;flex-wrap:wrap;margin:16px 0}
 .ledger div,.stat-row div{background:var(--card);border:1px solid var(--rule);border-radius:var(--r);

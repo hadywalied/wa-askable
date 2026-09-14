@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events';
-import { createHash } from 'node:crypto';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { createHash, randomBytes } from 'node:crypto';
+import { copyFile, mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import {
   // NAMED import, not default. Baileys is CommonJS with no real default export:
@@ -105,6 +105,20 @@ export const CONNECT_TIMEOUT_MS = 30_000;
 /** WhatsApp rotates the QR roughly every 20s; used only for the countdown. */
 const QR_TTL_MS = 20_000;
 
+/**
+ * Replace the adv-secret field of a pairing QR payload.
+ *
+ * Format: ref,noiseKeyB64,identityKeyB64,advSecretB64,platformId — base64 can
+ * contain '+' and '/' but never ',', so splitting on commas is safe. Anything
+ * unexpected is returned untouched rather than corrupted.
+ */
+export function withCurrentAdvSecret(qr: string, advSecret: string): string {
+  const parts = qr.split(',');
+  if (parts.length < 5) return qr;
+  parts[3] = advSecret;
+  return parts.join(',');
+}
+
 /** Turns whatever Baileys threw into something a person can act on. */
 export function describeError(err: unknown): string {
   const raw = err instanceof Error ? err.message : String(err ?? 'unknown error');
@@ -140,6 +154,7 @@ export class WhatsAppArchive extends EventEmitter {
   private retryTimer: NodeJS.Timeout | null = null;
   private connecting = false;
   private watchdog: NodeJS.Timeout | null = null;
+  private captureFlush: NodeJS.Timeout | null = null;
   private lastQr: string | null = null;
 
   constructor(
@@ -276,7 +291,15 @@ export class WhatsAppArchive extends EventEmitter {
       auth: state,
       // Identifying as a desktop client makes WhatsApp send a larger initial
       // history blob than the default browser identity does.
-      browser: Browsers.macOS('Desktop'),
+      // NOT Browsers.macOS('Desktop'). That identity combined with
+      // syncFullHistory is rejected by WhatsApp during companion registration:
+      // the Noise handshake completes, we send the pairing payload, and the
+      // server closes the socket (428) before ever issuing a QR. Reproduced
+      // 3/3 with that pair and 3/3 successful with this one, across Baileys
+      // 6.17 and 7.0.0-rc14, on two network stacks. The original code chose the
+      // macOS identity to coax a larger history blob out of WhatsApp; a bigger
+      // blob is worth nothing if the device can never link.
+      browser: Browsers.ubuntu('Chrome'),
       syncFullHistory: true,
       // Two settings that keep this invisible to the people messaging you:
       // no online presence, and no blue ticks from the archive.
@@ -287,10 +310,43 @@ export class WhatsAppArchive extends EventEmitter {
 
     sock.ev.on('creds.update', saveCreds);
 
+    // The other half of the companion_reg_refresh handling: rotate the secret
+    // the server just retired, persist it, and re-render the QR already on
+    // screen with the new value.
+    sock.ws.on('CB:notification', (node: { attrs?: Record<string, string> }) => {
+      if (node?.attrs?.type !== 'companion_reg_refresh') return;
+      const rotated = randomBytes(32).toString('base64');
+      state.creds.advSecretKey = rotated;
+      void saveCreds();
+      this.emit('log', 'companion_reg_refresh: rotated adv secret, re-rendering QR');
+      if (this.lastQr) {
+        const refreshed = withCurrentAdvSecret(this.lastQr, rotated);
+        this.lastQr = refreshed;
+        void toDataURL(refreshed, { margin: 1, width: 320 }).then((qrDataUrl) =>
+          this.setStatus({ state: 'qr', qrDataUrl, qrExpiresAt: Date.now() + QR_TTL_MS }),
+        );
+      }
+    });
+
     sock.ev.on('connection.update', async (update) => {
-      const { connection, lastDisconnect, qr } = update;
+      const { connection, lastDisconnect } = update;
+      let { qr } = update;
 
       if (qr) {
+        // Always advertise the CURRENT adv secret.
+        //
+        // WhatsApp retires an unpaired companion's registration material
+        // mid-flow with <notification type='companion_reg_refresh'>. Baileys
+        // captures advSecretKey once when the pairing flow starts and never
+        // re-reads it, so every QR it renders after a refresh advertises a
+        // secret the server has already discarded: the phone scans, reports
+        // "couldn't link", and pair-success never arrives. That is upstream
+        // issue #2737 — unfixed in 6.x, 7.0.0-rc14 and every published fork.
+        //
+        // The payload is [ref, noiseKey, identityKey, advSecret, platform], so
+        // substituting field 3 is enough, and it keeps the same ref rather than
+        // spending one from the pool the server allotted.
+        qr = withCurrentAdvSecret(qr, state.creds.advSecretKey);
         // printQRInTerminal was removed from Baileys; the QR string is ours to
         // render. Imported statically: a dynamic import() resolved from inside
         // an asar archive is an avoidable risk on a path that only ever runs in
@@ -308,6 +364,11 @@ export class WhatsAppArchive extends EventEmitter {
         this.clearWatchdog();
         this.connecting = false;
         this.attempt = 0; // a good connection resets the backoff
+        // Keep a copy of credentials that are known to have worked. A partially
+        // completed pairing leaves registered=false, and the next launch then
+        // starts a fresh registration and overwrites the file — silently
+        // destroying a session that was capturing fine.
+        void this.backupCreds();
         this.setStatus({
           state: 'open',
           qrDataUrl: undefined,
@@ -367,6 +428,19 @@ export class WhatsAppArchive extends EventEmitter {
       pairingCode: undefined,
       lastError: undefined,
     });
+  }
+
+  /** Snapshot creds.json after a connection that actually worked. */
+  private async backupCreds(): Promise<void> {
+    try {
+      await copyFile(
+        path.join(this.authDir, 'creds.json'),
+        path.join(this.authDir, 'creds.json.last-good'),
+      );
+      this.emit('log', 'saved a known-good credentials snapshot');
+    } catch {
+      /* first connection, or nothing to copy yet */
+    }
   }
 
   private clearRetry(): void {
@@ -455,7 +529,16 @@ export class WhatsAppArchive extends EventEmitter {
       enrich_state: kind === 'text' && !raw ? 'skipped' : 'pending',
     });
 
-    this.setStatus({ capturedThisSession: this.status.capturedThisSession + 1 });
+    // The initial history blob arrives as thousands of messages in a burst.
+    // Emitting a status update per message floods IPC and the renderer for no
+    // benefit — the count only has to look live, so coalesce it.
+    this.status.capturedThisSession += 1;
+    if (!this.captureFlush) {
+      this.captureFlush = setTimeout(() => {
+        this.captureFlush = null;
+        this.setStatus({});
+      }, 400);
+    }
     this.emit('captured', { id, chatJid: jid, kind });
   }
 

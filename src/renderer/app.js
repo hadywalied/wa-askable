@@ -389,8 +389,17 @@ function obStep(n) {
   for (const i of document.querySelectorAll('.ob-progress i')) {
     i.classList.toggle('done', Number(i.dataset.step) <= n);
   }
+  if (n === 4) paintObProvider();
   if (n === 3 && !links.onboarding) {
-    links.onboarding = mountLink($('obLinkHost'), wa, { onLinked: finishOnboarding });
+    links.onboarding = mountLink($('obLinkHost'), wa, {
+      // Do NOT jump straight into the app. Linking is the moment the archive
+      // starts existing and the history import begins; yanking the screen away
+      // hides both. Swap the actions and let them move on when ready.
+      onLinked: () => {
+        $('obLinkActions').hidden = true;
+        $('obDoneActions').hidden = false;
+      },
+    });
     links.onboarding.render(state.status);
   }
 }
@@ -412,13 +421,73 @@ $('obUseFolder').onclick = async () => {
 };
 $('obSkip').onclick = finishOnboarding;
 
+// --- onboarding step 4: AI provider ---------------------------------------
+// Placed after linking on purpose. Capture is the part that cannot be recovered
+// later; a provider can be added any time, so it must never gate recording.
+
+function paintObProvider() {
+  const s = state.settings;
+  if (!s) return;
+  const sel = $('obProvider');
+  if (sel.options.length !== (s.presets || []).length) {
+    sel.innerHTML = (s.presets || []).map((p) => `<option value="${p.id}">${p.label}</option>`).join('');
+    sel.value = s.providerId;
+  }
+  const preset = (s.presets || []).find((p) => p.id === sel.value);
+  $('obCustomFields').hidden = sel.value !== 'custom';
+  if (preset && sel.value !== 'custom') {
+    $('obModel').placeholder = preset.suggestedModel || 'model name';
+    if (preset.suggestedModel) $('obModel').value = preset.suggestedModel;
+    $('obBaseUrl').value = preset.baseUrl;
+    $('obKind').value = preset.kind;
+  }
+  $('obProviderNote').textContent = [
+    preset?.note,
+    preset && !preset.needsKey ? 'Runs on this machine — no API key needed.' : '',
+  ].filter(Boolean).join(' ');
+}
+$('obProvider').onchange = paintObProvider;
+
+$('obSkipAi').onclick = finishOnboarding;
+
+$('obSaveAi').onclick = async () => {
+  $('obSaveAi').disabled = true;
+  $('obProviderMsg').textContent = 'Saving…';
+  try {
+    const id = $('obProvider').value;
+    const key = $('obKey').value.trim();
+    const updated = await wa.saveSettings({
+      providerId: id,
+      ...(id === 'custom' ? { baseUrl: $('obBaseUrl').value.trim(), providerKind: $('obKind').value } : {}),
+      model: $('obModel').value.trim(),
+      ...(key ? { apiKey: key } : {}),
+    });
+    paintSettings(updated);
+    // Say plainly whether it actually took, rather than assuming.
+    if (updated.localOnly) {
+      $('obProviderMsg').textContent =
+        'Saved, but still local-only — that provider needs an API key or a base URL.';
+      $('obSaveAi').disabled = false;
+      return;
+    }
+    finishOnboarding();
+  } catch (e) {
+    $('obProviderMsg').textContent = e.message;
+    $('obSaveAi').disabled = false;
+  }
+};
+
 let onboardingDone = false;
 function finishOnboarding() {
-  if (onboardingDone) return;
-  onboardingDone = true;
+  // Idempotent by effect, not by early return. The guard used to skip the whole
+  // body on a second call, so any later "finish" — the AI step, Skip — left the
+  // overlay on screen because boot had already consumed the one allowed run.
   $('onboarding').hidden = true;
   $('shell').hidden = false;
-  go('ask');
+  if (!onboardingDone) {
+    onboardingDone = true;
+    go('ask');
+  }
 }
 
 // ---------------------------------------------------------------- boot
