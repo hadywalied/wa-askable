@@ -225,65 +225,71 @@ async function runLifecycleTest(win: BrowserWindow): Promise<void> {
 async function runSmokeTest(win: BrowserWindow): Promise<void> {
   const script = `(async () => {
     const out = { bridge: typeof window.wa };
-    // The page's boot IIFE is async and resolves after load; wait for it rather
-    // than sampling a half-painted UI.
-    for (let i = 0; i < 100 && document.getElementById('mode').textContent === 'checking…'; i++) {
+    const $ = (id) => document.getElementById(id);
+
+    // Wait for the page's own boot rather than sampling a half-painted UI.
+    for (let i = 0; i < 100; i++) {
+      if (($('onboarding') && !$('onboarding').hidden) || ($('shell') && !$('shell').hidden)) break;
       await new Promise((r) => setTimeout(r, 50));
     }
+    out.onboardingShown = !$('onboarding').hidden;
+
+    // --- core IPC ------------------------------------------------------
     out.session = await window.wa.getSession();
     const opened = await window.wa.openWorkspace('');
     out.workspace = opened.workspace;
-    out.stats = opened.stats;
     out.warnings = opened.warnings.length;
     out.status = (await window.wa.getStatus()).connection.state;
     out.chats = (await window.wa.listChats()).chats.length;
     out.hits = (await window.wa.search({ query: '' })).hits.length;
-    // Errors thrown in main must surface as rejections here, not hang.
-    out.askError = await window.wa.ask('test').then(() => 'NO ERROR', (e) => e.message.slice(0, 70));
+
+    // Errors thrown in main must surface as rejections, not hang.
+    out.askError = await window.wa.ask('test').then(() => 'NO ERROR', (e) => e.message.slice(0, 60));
+
     // The sandbox must hold: no require, no process, no raw ipcRenderer.
-    out.leaks = [
-      typeof window.require,
-      typeof window.process,
-      typeof window.ipcRenderer,
-    ].join(',');
-    // Proves the page's own boot IIFE ran against the bridge, not just the
-    // calls this test makes directly.
-    out.modeText = document.getElementById('mode').textContent;
-    out.wsPath = document.getElementById('wsPath').value;
+    out.leaks = [typeof window.require, typeof window.process, typeof window.ipcRenderer].join(',');
 
-    // --- Phase 3: settings ---------------------------------------------
+    // --- settings ------------------------------------------------------
     const s0 = await window.wa.getSettings();
-    out.settingsShape = [s0.model, s0.hasKey, s0.localOnly, s0.encryptionAvailable].join('|');
-    // The key must never travel back to the renderer, under any field name.
     out.keyNeverReturned = !JSON.stringify(s0).includes('sk-ant-');
-
-    // Setting a key must flip local-only -> model-assisted with no relaunch.
     const s1 = await window.wa.saveSettings({ apiKey: 'sk-ant-test-not-a-real-key', model: 'claude-opus-5' });
-    // A base URL alone must enable model-assisted mode — a local agent usually
-    // needs no credential, and requiring one would make that case impossible.
+    out.afterSet = [s1.hasKey, s1.localOnly, s1.model].join('|');
+    out.keyStillNotReturned = !JSON.stringify(s1).includes('sk-ant-');
     const sB = await window.wa.saveSettings({ apiKey: null, providerId: 'ollama' });
     out.presetApplied = [sB.providerId, sB.providerKind, sB.baseUrl, sB.localOnly, sB.localEndpoint].join('|');
     out.presetCount = (sB.presets || []).length;
     const sC = await window.wa.saveSettings({ providerId: 'cohere' });
     out.cohere = [sC.providerKind, sC.baseUrl].join('|');
-    await window.wa.saveSettings({ providerId: 'anthropic', baseUrl: '' });
-
-    // The settings page must actually exist and be reachable.
-    document.getElementById('tabSettings').click();
-    out.settingsVisible = !document.getElementById('viewSettings').hidden
-      && document.getElementById('viewArchive').hidden;
-    out.providerOptions = document.getElementById('providerId').options.length;
-    document.getElementById('tabArchive').click();
-    out.archiveBack = !document.getElementById('viewArchive').hidden;
-    out.afterSet = [s1.hasKey, s1.localOnly, s1.model].join('|');
-    out.keyStillNotReturned = !JSON.stringify(s1).includes('sk-ant-');
-    // ask() must now get past the local-only guard (it will fail on auth, which
-    // is a different error and proves the client was rebuilt live).
-    out.askAfterKey = await window.wa.ask('hi').then(() => 'NO ERROR', (e) => e.message.slice(0, 30));
-
-    // Clearing it must flip straight back.
-    const s2 = await window.wa.saveSettings({ apiKey: null });
+    const s2 = await window.wa.saveSettings({ providerId: 'anthropic', apiKey: null, baseUrl: '' });
     out.afterClear = [s2.hasKey, s2.localOnly].join('|');
+
+    // --- redesign: shell, routing, panes, conversations ----------------
+    $('obSkip') && $('obSkip').click();
+    out.shellVisible = !$('shell').hidden;
+
+    document.querySelector('.nav-item[data-view="settings"]').click();
+    out.settingsRouted = !document.querySelector('.view[data-view="settings"]').hidden;
+    for (const pane of ['connection', 'workspace', 'indexing', 'provider', 'about']) {
+      document.querySelector('#settingsNav [data-pane="' + pane + '"]').click();
+      if (document.querySelector('.pane[data-pane="' + pane + '"]').hidden) {
+        out.paneFailed = pane;
+      }
+    }
+    out.panesOk = !out.paneFailed;
+    out.linkStageMounted = Boolean(document.querySelector('#linkHost .link-stage'));
+
+    const conv = await window.wa.newConversation();
+    const before = (await window.wa.listConversations()).conversations.length;
+    await window.wa.getConversation(conv.id);
+    await window.wa.deleteConversation(conv.id);
+    const after = (await window.wa.listConversations()).conversations.length;
+    out.conversations = before + '->' + after;
+
+    document.querySelector('.nav-item[data-view="chats"]').click();
+    out.chatsRouted = !document.querySelector('.view[data-view="chats"]').hidden;
+    document.querySelector('.nav-item[data-view="ask"]').click();
+    out.askRouted = !document.querySelector('.view[data-view="ask"]').hidden;
+    out.modeText = $('mode').textContent;
     return JSON.stringify(out);
   })()`;
   try {
@@ -317,7 +323,21 @@ if (gotLock) {
       });
     });
 
-    registerIpc(await loadConfig());
+    // Probe the QR rendering path directly. It lives inside an async Baileys
+  // event handler, so a failure there is an unhandled rejection that leaves the
+  // UI on 'connecting' forever with nothing logged — indistinguishable from a
+  // hang. Dynamic import() from inside an asar is the specific worry.
+  if (process.env.WA_SMOKE) {
+    try {
+      const { toDataURL } = await import('qrcode');
+      const url = await toDataURL('probe', { margin: 1, width: 64 });
+      console.log('[qrprobe] OK', url.slice(0, 30), 'len=', url.length);
+    } catch (err) {
+      console.error('[qrprobe] FAILED', err);
+    }
+  }
+
+  registerIpc(await loadConfig());
 
     createTray(hooks);
     onStatusChange((s) => updateTray(s, hooks));

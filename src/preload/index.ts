@@ -57,13 +57,24 @@ const api = {
   listChats: (): Promise<{ chats: unknown[] }> => invoke(CHANNELS.chatsList),
   search: (args: SearchArgs): Promise<{ hits: unknown[] }> =>
     invoke(CHANNELS.searchRun, args),
-  ask: (question: string): Promise<AskResult> => invoke(CHANNELS.askSend, question),
+  ask: (question: string, conversationId?: string): Promise<AskResult> =>
+    invoke(CHANNELS.askSend, question, conversationId),
+
+  listConversations: (): Promise<{ conversations: unknown[] }> => invoke(CHANNELS.convList),
+  newConversation: (): Promise<{ id: string; title: string }> => invoke(CHANNELS.convCreate),
+  getConversation: (id: string): Promise<{ turns: unknown[] }> => invoke(CHANNELS.convGet, id),
+  deleteConversation: (id: string): Promise<{ ok: boolean }> => invoke(CHANNELS.convDelete, id),
 
   getSettings: (): Promise<AppSettings> => invoke(CHANNELS.settingsGet),
   // The key travels in, never out: settings:get reports only whether one is set.
   saveSettings: (patch: SettingsPatch): Promise<SettingsSaveResult> =>
     invoke(CHANNELS.settingsSave, patch),
   pickWorkspace: (): Promise<{ path: string | null }> => invoke(CHANNELS.workspacePick),
+
+  requestPairingCode: (phone: string): Promise<{ code: string }> =>
+    invoke(CHANNELS.whatsappPairingCode, phone),
+  openLogs: (): Promise<{ path: string }> => invoke(CHANNELS.logsOpen),
+  tailLogs: (): Promise<{ path: string; lines: string }> => invoke(CHANNELS.logsTail),
 
   onStatus: (cb: (s: WhatsAppStatus) => void): void => {
     ipcRenderer.on(EVENTS.status, (_event, payload: WhatsAppStatus) => cb(payload));

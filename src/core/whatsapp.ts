@@ -19,6 +19,7 @@ import {
   type WAMessage,
 } from '@whiskeysockets/baileys';
 import pino from 'pino';
+import { toDataURL } from 'qrcode';
 import type { DB, MessageKind } from './db.js';
 import { insertMessage, rememberMedia, upsertChat } from './db.js';
 import { foldForSearch, stemsForSearch } from './normalize.js';
@@ -45,8 +46,14 @@ export type ConnState = 'idle' | 'connecting' | 'qr' | 'open' | 'closed' | 'logg
 export interface WhatsAppStatus {
   state: ConnState;
   qrDataUrl?: string;
+  /** Unix ms; the QR is rotated by WhatsApp and the UI counts down to it. */
+  qrExpiresAt?: number;
+  /** Pairing code, when linking by phone number instead of QR. */
+  pairingCode?: string;
   selfJid?: string;
   lastError?: string;
+  /** Which attempt we are on, so the UI can say "retrying (3)". */
+  attempt?: number;
   capturedThisSession: number;
 }
 
@@ -93,6 +100,22 @@ function timestampMs(msg: WAMessage): number {
   return Date.now();
 }
 
+/** How long a socket may sit with no qr/open/close before we call it stuck. */
+export const CONNECT_TIMEOUT_MS = 30_000;
+/** WhatsApp rotates the QR roughly every 20s; used only for the countdown. */
+const QR_TTL_MS = 20_000;
+
+/** Turns whatever Baileys threw into something a person can act on. */
+export function describeError(err: unknown): string {
+  const raw = err instanceof Error ? err.message : String(err ?? 'unknown error');
+  const msg = raw.replace(/^Error:\s*/, '');
+  if (/Connection Terminated|ECONNRESET|ENOTFOUND|EAI_AGAIN|ETIMEDOUT|socket hang up/i.test(msg)) {
+    return `${msg} — WhatsApp closed the connection. Usually a network, VPN or firewall blocking WebSockets.`;
+  }
+  if (/rate|429/i.test(msg)) return `${msg} — too many attempts; wait a few minutes.`;
+  return msg;
+}
+
 /** Backoff bounds for reconnection. */
 export const RECONNECT_MIN_MS = 2_000;
 export const RECONNECT_MAX_MS = 5 * 60_000;
@@ -116,6 +139,8 @@ export class WhatsAppArchive extends EventEmitter {
   private attempt = 0;
   private retryTimer: NodeJS.Timeout | null = null;
   private connecting = false;
+  private watchdog: NodeJS.Timeout | null = null;
+  private lastQr: string | null = null;
 
   constructor(
     private readonly db: DB,
@@ -134,24 +159,101 @@ export class WhatsAppArchive extends EventEmitter {
     this.emit('status', this.getStatus());
   }
 
-  async connect(): Promise<void> {
-    // A resume event and a socket close can land together; two concurrent
-    // connects would race for the same auth directory.
-    if (this.connecting || this.status.state === 'open') return;
+  /**
+   * Start linking.
+   *
+   * `force` tears down whatever is in flight first. Without it this used to
+   * return silently whenever `connecting` was already true — and `connecting`
+   * was only ever cleared by an 'open' or 'close' event, which a stalled
+   * handshake never emits. The result was a Connect button that did nothing at
+   * all, forever, with nothing on screen and nothing logged. Never return
+   * silently from a user-initiated action.
+   */
+  async connect(force = false): Promise<void> {
+    if (this.status.state === 'open' && !force) return;
+
+    if (this.connecting) {
+      if (!force) {
+        this.emit('log', 'connect ignored: already connecting');
+        return;
+      }
+      this.emit('log', 'connect forced: tearing down the in-flight socket');
+      this.teardown();
+    }
+
     this.connecting = true;
     this.stopping = false;
     this.clearRetry();
-    this.setStatus({ state: 'connecting', lastError: undefined });
+    this.lastQr = null;
+    this.setStatus({
+      state: 'connecting',
+      lastError: undefined,
+      qrDataUrl: undefined,
+      pairingCode: undefined,
+      attempt: this.attempt,
+    });
+
+    // A socket that neither connects nor closes is the worst case, because it
+    // looks exactly like progress. Time it out explicitly.
+    this.armWatchdog();
+
     try {
       await this.openSocket();
     } catch (err) {
-      // Never leave the UI spinning on 'connecting'. Anything thrown here is
-      // reported and retried rather than swallowed.
+      this.clearWatchdog();
       this.connecting = false;
-      this.setStatus({ state: 'closed', lastError: String((err as Error)?.message ?? err) });
+      this.setStatus({ state: 'closed', lastError: describeError(err) });
       this.scheduleReconnect();
       throw err;
     }
+  }
+
+  private armWatchdog(): void {
+    this.clearWatchdog();
+    this.watchdog = setTimeout(() => {
+      this.watchdog = null;
+      if (this.status.state === 'qr' || this.status.state === 'open') return;
+      this.emit('log', `no response from WhatsApp in ${CONNECT_TIMEOUT_MS / 1000}s`);
+      this.teardown();
+      this.setStatus({
+        state: 'closed',
+        lastError:
+          `No response from WhatsApp after ${CONNECT_TIMEOUT_MS / 1000}s. ` +
+          'Check the network, a VPN, or a firewall blocking WebSocket traffic.',
+      });
+      this.scheduleReconnect();
+    }, CONNECT_TIMEOUT_MS);
+  }
+
+  private clearWatchdog(): void {
+    if (this.watchdog) {
+      clearTimeout(this.watchdog);
+      this.watchdog = null;
+    }
+  }
+
+  /** Drop the socket without touching state the UI is showing. */
+  private teardown(): void {
+    this.clearWatchdog();
+    this.connecting = false;
+    try {
+      this.sock?.end(undefined);
+    } catch {
+      /* already gone */
+    }
+    this.sock = null;
+  }
+
+  /** Link with an 8-character code typed into the phone instead of a QR scan. */
+  async requestPairingCode(phoneNumber: string): Promise<string> {
+    const digits = phoneNumber.replace(/[^0-9]/g, '');
+    if (digits.length < 8) throw new Error('Enter your number in full international format.');
+    if (!this.sock) throw new Error('Not connected yet — press Link device first.');
+    if (this.status.state === 'open') throw new Error('Already linked.');
+    const code = await this.sock.requestPairingCode(digits);
+    this.emit('log', 'pairing code issued');
+    this.setStatus({ pairingCode: code });
+    return code;
   }
 
   private async openSocket(): Promise<void> {
@@ -190,12 +292,20 @@ export class WhatsAppArchive extends EventEmitter {
 
       if (qr) {
         // printQRInTerminal was removed from Baileys; the QR string is ours to
-        // render. The UI shows it as an image so there is no terminal step.
-        const { toDataURL } = await import('qrcode');
-        this.setStatus({ state: 'qr', qrDataUrl: await toDataURL(qr, { margin: 1, width: 320 }) });
+        // render. Imported statically: a dynamic import() resolved from inside
+        // an asar archive is an avoidable risk on a path that only ever runs in
+        // a packaged build.
+        this.clearWatchdog();
+        this.lastQr = qr;
+        this.setStatus({
+          state: 'qr',
+          qrDataUrl: await toDataURL(qr, { margin: 1, width: 320 }),
+          qrExpiresAt: Date.now() + QR_TTL_MS,
+        });
       }
 
       if (connection === 'open') {
+        this.clearWatchdog();
         this.connecting = false;
         this.attempt = 0; // a good connection resets the backoff
         this.setStatus({
@@ -208,6 +318,7 @@ export class WhatsAppArchive extends EventEmitter {
       if (connection === 'close') {
         const code = (lastDisconnect?.error as { output?: { statusCode?: number } } | undefined)
           ?.output?.statusCode;
+        this.clearWatchdog();
         this.connecting = false;
         if (code === DisconnectReason.loggedOut) {
           // The link was revoked from the phone. Credentials are dead; the user
@@ -215,7 +326,11 @@ export class WhatsAppArchive extends EventEmitter {
           this.setStatus({ state: 'logged_out', lastError: 'Device was unlinked from the phone.' });
           return;
         }
-        this.setStatus({ state: 'closed', lastError: String(lastDisconnect?.error ?? 'closed') });
+        this.setStatus({
+          state: 'closed',
+          lastError: describeError(lastDisconnect?.error ?? 'closed'),
+          attempt: this.attempt,
+        });
         this.scheduleReconnect();
       }
     });
@@ -243,11 +358,15 @@ export class WhatsAppArchive extends EventEmitter {
 
   async disconnect(): Promise<void> {
     this.stopping = true;
-    this.connecting = false;
     this.clearRetry();
-    this.sock?.end(undefined);
-    this.sock = null;
-    this.setStatus({ state: 'idle', qrDataUrl: undefined });
+    this.teardown();
+    this.attempt = 0;
+    this.setStatus({
+      state: 'idle',
+      qrDataUrl: undefined,
+      pairingCode: undefined,
+      lastError: undefined,
+    });
   }
 
   private clearRetry(): void {

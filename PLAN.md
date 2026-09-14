@@ -1032,3 +1032,65 @@ two very different privacy positions:
 - `local only · nothing leaves this machine`
 - `local model · 127.0.0.1:11434 · nothing leaves this machine`
 - `model-assisted · <model> · api.cohere.ai`
+
+---
+
+## 20. v0.3.0 — the redesign, and the bug that made Connect do nothing
+
+### 20.1 Root cause of "pressing Connect does nothing"
+
+Not the environment, and not packaging. A design flaw of mine from Phase 2:
+
+```ts
+if (this.connecting || this.status.state === 'open') return;   // silent no-op
+```
+
+`connecting` was set true on every attempt and cleared **only** by an `open` or `close` event.
+A stalled handshake emits neither, so the flag stuck `true` forever. Meanwhile
+`resumeLastWorkspace()` already calls `connect()` at launch — so by the time the user pressed the
+button it returned instantly, changed no state, logged nothing, and rendered nothing.
+
+Three fixes:
+
+1. **`connect(force)`** — a user-initiated action never returns silently. The button tears down
+   whatever is in flight and starts fresh.
+2. **A watchdog.** A socket that neither connects nor closes within 30s is declared stuck,
+   reported, and retried. *A hang that looks like progress is the worst failure mode there is.*
+3. **`qrcode` imported statically.** A dynamic `import()` resolved from inside an asar is an
+   avoidable risk on a path that only ever runs in a packaged build.
+
+### 20.2 There was no way to see anything
+
+Every diagnosis in this project needed console output that nobody running an installer can see.
+`src/main/log.ts` writes a rotating log to `userData/logs/`, surfaced by **Settings → About →
+Open log file / Copy diagnostics**. Errors are also translated —
+`describeError()` turns `Connection Terminated` into a sentence naming the likely cause.
+
+### 20.3 Redesign
+
+Research applied rather than decorated:
+
+- **Onboarding** (NN/g-style progressive disclosure): three steps, and the AI provider is
+  deliberately **not** one of them. First value here is *"it is recording"*, and that is
+  time-critical — nothing before linking is recoverable. Asking for an API key before the archive
+  exists buries the only thing that matters. Shown once, for a fresh archive only.
+- **Settings**: five sections, at the top of the recommended 4–5 range — Connection, Workspace,
+  Indexing, AI provider, About. Grouped by the user's mental model, not the code's.
+- **Ask**: a real chat browser. Conversation history, New chat, delete, titles taken from the
+  first question. Prior turns are replayed so follow-ups work — `ask()` always accepted a
+  `history` argument and nothing had ever passed it.
+- **Chats**: archive browser, conversation list plus message thread, with cross-archive search.
+
+Conversations are stored in the **workspace** database, not app settings: a conversation is only
+meaningful against the archive it was asked of.
+
+The link flow is one component (`link.js`) mounted in both onboarding and Settings → Connection.
+Two implementations would drift, and this is the screen where a stale message costs someone their
+archive.
+
+### 20.4 Testing note
+
+The smoke harness still carried assertions against the *previous* design (`tabSettings`,
+`viewArchive`) and failed with `Cannot read properties of null`. Worth noting because it is the
+same class of problem as §18: a test that references a UI that no longer exists gives no signal.
+It now walks all five settings panes, both routes, and the conversation lifecycle.

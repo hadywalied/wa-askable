@@ -2,10 +2,22 @@ import { BrowserWindow, dialog, ipcMain } from 'electron';
 import { makeProvider, type ChatProvider } from '../core/provider.js';
 import { loadConfig, type Config } from './config.js';
 import { auditWorkspace, openWorkspace, type Workspace } from '../core/workspace.js';
-import { openDatabase, stats, type DB } from '../core/db.js';
+import {
+  appendTurn,
+  conversationTurns,
+  createConversation,
+  deleteConversation,
+  listConversations,
+  openDatabase,
+  stats,
+  type DB,
+} from '../core/db.js';
 import { WhatsAppArchive } from '../core/whatsapp.js';
 import { Enricher, ask } from '../core/enrich.js';
 import { listChats, searchMessages } from '../core/search.js';
+import { shell } from 'electron';
+import { readFileSync } from 'node:fs';
+import { log, logPath } from './log.js';
 import { PROVIDER_PRESETS, isLocalEndpoint, presetById } from '../shared/providers.js';
 import {
   CHANNELS,
@@ -101,9 +113,14 @@ async function boot(cfg: Config, root: string): Promise<Runtime> {
   // Push, don't poll. The socket already fires on every captured message; the
   // renderer used to ask every 2.5s for something it could simply be told.
   wa.on('status', (s: WhatsAppStatus) => {
+    log('wa', `state=${s.state}`, s.lastError ?? undefined);
     broadcast(EVENTS.status, s);
     for (const cb of statusListeners) cb(s);
   });
+  wa.on('log', (m: string) => log('wa', m));
+  wa.on('reconnect-scheduled', (d: { delay: number; attempt: number }) =>
+    log('wa', `reconnect in ${Math.round(d.delay / 1000)}s (attempt ${d.attempt})`),
+  );
 
   // 'captured' fires once per message and a busy group will flood it, so stats
   // are coalesced onto a timer rather than sent per row.
@@ -256,9 +273,31 @@ export function registerIpc(initial: Config): void {
     };
   });
 
+  // force: a user pressing the button must always do something, even when a
+  // previous attempt is wedged. See the comment on connect().
   ipcMain.handle(CHANNELS.whatsappConnect, async () => {
-    await need().wa.connect();
+    log('ipc', 'connect requested by user');
+    await need().wa.connect(true);
     return need().wa.getStatus();
+  });
+
+  ipcMain.handle(CHANNELS.whatsappPairingCode, async (_e, phone: string) => {
+    const code = await need().wa.requestPairingCode(phone);
+    return { code };
+  });
+
+  ipcMain.handle(CHANNELS.logsOpen, async () => {
+    await shell.openPath(logPath());
+    return { path: logPath() };
+  });
+
+  ipcMain.handle(CHANNELS.logsTail, () => {
+    try {
+      const all = readFileSync(logPath(), 'utf8').split('\n');
+      return { path: logPath(), lines: all.slice(-200).join('\n') };
+    } catch {
+      return { path: logPath(), lines: '(no log yet)' };
+    }
   });
 
   ipcMain.handle(CHANNELS.whatsappDisconnect, async () => {
@@ -286,7 +325,17 @@ export function registerIpc(initial: Config): void {
     hits: searchMessages(need().db, args),
   }));
 
-  ipcMain.handle(CHANNELS.askSend, async (_e, question: string) => {
+  ipcMain.handle(CHANNELS.convList, () => ({ conversations: listConversations(need().db) }));
+  ipcMain.handle(CHANNELS.convCreate, () => createConversation(need().db));
+  ipcMain.handle(CHANNELS.convGet, (_e, id: string) => ({
+    turns: conversationTurns(need().db, id),
+  }));
+  ipcMain.handle(CHANNELS.convDelete, (_e, id: string) => {
+    deleteConversation(need().db, id);
+    return { ok: true };
+  });
+
+  ipcMain.handle(CHANNELS.askSend, async (_e, question: string, conversationId?: string) => {
     const { db, provider } = need();
     if (!provider) {
       throw new Error(
@@ -294,7 +343,26 @@ export function registerIpc(initial: Config): void {
           'search, which runs entirely on this machine.',
       );
     }
-    return ask(db, provider, cfg.model, question);
+    // Prior turns are replayed so follow-ups work ("and what about last week?").
+    // Tool results are deliberately not replayed — the agent can search again,
+    // and stuffing old results into context grows without bound.
+    const history = conversationId
+      ? conversationTurns(db, conversationId).map((t) => ({
+          role: t.role,
+          content: t.content,
+        }))
+      : [];
+
+    if (conversationId) appendTurn(db, conversationId, { role: 'user', content: question });
+    const reply = await ask(db, provider, cfg.model, question, history as never);
+    if (conversationId) {
+      appendTurn(db, conversationId, {
+        role: 'assistant',
+        content: reply.answer,
+        toolCalls: reply.toolCalls,
+      });
+    }
+    return reply;
   });
 }
 

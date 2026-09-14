@@ -21,6 +21,13 @@ export const CHANNELS = {
   settingsGet: 'settings:get',
   settingsSave: 'settings:save',
   workspacePick: 'workspace:pick',
+  whatsappPairingCode: 'whatsapp:pairing-code',
+  logsOpen: 'logs:open',
+  logsTail: 'logs:tail',
+  convList: 'conv:list',
+  convCreate: 'conv:create',
+  convGet: 'conv:get',
+  convDelete: 'conv:delete',
 } as const;
 
 /** Pushed from main; the renderer no longer polls. */
@@ -49,6 +56,9 @@ export type ConnState = 'idle' | 'connecting' | 'qr' | 'open' | 'closed' | 'logg
 export interface WhatsAppStatus {
   state: ConnState;
   qrDataUrl?: string;
+  qrExpiresAt?: number;
+  pairingCode?: string;
+  attempt?: number;
   selfJid?: string;
   lastError?: string;
   capturedThisSession: number;

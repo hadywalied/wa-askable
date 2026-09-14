@@ -152,7 +152,8 @@ src/
     config.ts      runtime config, rebuilt on every settings change
   preload/index.ts the ONLY surface the renderer sees (sandboxed, CommonJS)
   shared/ipc.ts    the IPC contract
-  renderer/        index.html + app.js — kept script-free of inline code for the CSP
+  renderer/        index.html, app.css, app.js, link.js — no inline script (strict CSP)
+                   onboarding · Ask (chat history) · Chats browser · Settings (5 sections)
 ```
 
 | | |

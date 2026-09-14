@@ -107,6 +107,29 @@ CREATE TRIGGER IF NOT EXISTS messages_au AFTER UPDATE ON messages BEGIN
 END;
 
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+
+/*
+ * Saved Ask conversations. They live in the workspace, not in app settings,
+ * because a conversation is only meaningful against the archive it was asked
+ * of — moving workspaces should not drag someone else's answers along.
+ */
+CREATE TABLE IF NOT EXISTS conversations (
+  id         TEXT PRIMARY KEY,
+  title      TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS conversation_turns (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+  role            TEXT NOT NULL,
+  content         TEXT NOT NULL,
+  tool_calls      TEXT,
+  ts              INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_turns_conv ON conversation_turns(conversation_id, id);
 `;
 
 export type DB = Database.Database;
@@ -196,4 +219,91 @@ export function stats(db: DB): WorkspaceStats {
     oldest: m.oldest,
     newest: m.newest,
   };
+}
+
+
+// --- saved Ask conversations -------------------------------------------------
+
+export interface ConversationRow {
+  id: string;
+  title: string;
+  created_at: number;
+  updated_at: number;
+  turns?: number;
+}
+
+export interface TurnRow {
+  role: 'user' | 'assistant';
+  content: string;
+  toolCalls: { name: string; input: unknown }[];
+  ts: number;
+}
+
+export function listConversations(db: DB, limit = 100): ConversationRow[] {
+  return db
+    .prepare(
+      `SELECT c.id, c.title, c.created_at, c.updated_at,
+              (SELECT COUNT(*) FROM conversation_turns t WHERE t.conversation_id = c.id) AS turns
+         FROM conversations c
+        ORDER BY c.updated_at DESC
+        LIMIT ?`,
+    )
+    .all(limit) as ConversationRow[];
+}
+
+export function createConversation(db: DB, title = 'New chat'): ConversationRow {
+  const now = Date.now();
+  const id = `c_${now.toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+  db.prepare(
+    'INSERT INTO conversations (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)',
+  ).run(id, title, now, now);
+  return { id, title, created_at: now, updated_at: now, turns: 0 };
+}
+
+export function conversationTurns(db: DB, conversationId: string): TurnRow[] {
+  const rows = db
+    .prepare(
+      `SELECT role, content, tool_calls AS toolCalls, ts
+         FROM conversation_turns WHERE conversation_id = ? ORDER BY id ASC`,
+    )
+    .all(conversationId) as { role: string; content: string; toolCalls: string | null; ts: number }[];
+  return rows.map((r) => ({
+    role: r.role as 'user' | 'assistant',
+    content: r.content,
+    toolCalls: r.toolCalls ? (JSON.parse(r.toolCalls) as TurnRow['toolCalls']) : [],
+    ts: r.ts,
+  }));
+}
+
+export function appendTurn(
+  db: DB,
+  conversationId: string,
+  turn: { role: 'user' | 'assistant'; content: string; toolCalls?: unknown[] },
+): void {
+  const now = Date.now();
+  db.prepare(
+    `INSERT INTO conversation_turns (conversation_id, role, content, tool_calls, ts)
+     VALUES (?, ?, ?, ?, ?)`,
+  ).run(
+    conversationId,
+    turn.role,
+    turn.content,
+    turn.toolCalls?.length ? JSON.stringify(turn.toolCalls) : null,
+    now,
+  );
+  db.prepare('UPDATE conversations SET updated_at = ? WHERE id = ?').run(now, conversationId);
+
+  // Name the conversation after its first question, the way every chat app
+  // does — "New chat" repeated twenty times is not a history.
+  if (turn.role === 'user') {
+    db.prepare(
+      `UPDATE conversations SET title = ?
+        WHERE id = ? AND (title = 'New chat' OR title = '')`,
+    ).run(turn.content.replace(/\s+/g, ' ').trim().slice(0, 60), conversationId);
+  }
+}
+
+export function deleteConversation(db: DB, id: string): void {
+  db.prepare('DELETE FROM conversation_turns WHERE conversation_id = ?').run(id);
+  db.prepare('DELETE FROM conversations WHERE id = ?').run(id);
 }
