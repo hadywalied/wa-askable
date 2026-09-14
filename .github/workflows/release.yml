@@ -1,19 +1,27 @@
-name: build
+name: release
 
+# Tag a version to ship it:
+#   npm version patch   (or edit package.json)
+#   git tag v0.1.1 && git push origin v0.1.1
+#
+# Produces a DRAFT GitHub release with installers for all three platforms
+# attached. Draft on purpose — a human reads the notes and presses publish, so a
+# mistyped tag is not immediately a download people can install.
 on:
   push:
-    branches: [main]
-  pull_request:
+    tags: ['v*']
   workflow_dispatch:
 
-# Signed installers cannot be cross-compiled: macOS builds on macOS, Windows on
-# Windows. That is the whole reason this matrix exists. See PLAN.md §4 Phase 4.
+permissions:
+  contents: write
 
 jobs:
+  # Same definition CI runs on every push. A release cannot ship something that
+  # was verified differently.
   check:
     uses: ./.github/workflows/checks.yml
 
-  build:
+  publish:
     needs: check
     strategy:
       fail-fast: false
@@ -38,20 +46,21 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bun run setup
 
-      # --publish never: this workflow proves the installers build, it does not
-      # ship them. release.yml is the only thing that uploads.
-      - name: build installers
-        run: bun run dist:${{ matrix.platform }} -- --publish never
+      - name: build and publish installers
+        run: bun run dist:${{ matrix.platform }} -- --publish always
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Signing runs only when the secrets exist, so forks and unsigned local
-          # builds still produce working (if unsigned) artifacts.
+          # Signing is applied only when these exist. Without them the artifacts
+          # are unsigned but valid: macOS users will see a Gatekeeper warning,
+          # Windows users a SmartScreen one.
           CSC_LINK: ${{ secrets.CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
 
+      # Belt and braces: if electron-builder's publisher is ever misconfigured,
+      # the binaries are still retrievable from the run itself.
       - uses: actions/upload-artifact@v4
         with:
           name: wa-askable-${{ matrix.platform }}

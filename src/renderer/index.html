@@ -163,7 +163,14 @@
 
     <div class="row">
       <div>
-        <label for="apiKey">Anthropic API key</label>
+        <label for="baseUrl">API base URL <span style="opacity:.6">— blank for Anthropic</span></label>
+        <input type="text" id="baseUrl" spellcheck="false" placeholder="http://127.0.0.1:8080">
+      </div>
+    </div>
+
+    <div class="row">
+      <div>
+        <label for="apiKey">API key <span style="opacity:.6">— often not needed for a local provider</span></label>
         <input type="password" id="apiKey" spellcheck="false" autocomplete="off"
                placeholder="sk-ant-…">
       </div>
@@ -172,9 +179,11 @@
     </div>
 
     <p class="note">
-      Without a key this stays in local-only mode: capture, folding, stemming and keyword
-      search all work and nothing leaves this machine. With a key set, message text is sent
-      to the model for glossing and answering — including messages other people wrote.
+      Without a key or a base URL this stays in local-only mode: capture, folding, stemming
+      and keyword search all work and nothing leaves this machine. Otherwise message text is
+      sent to whatever endpoint is configured for glossing and answering — including messages
+      other people wrote. Point the base URL at an Anthropic-compatible service running on
+      this machine and that text never leaves it.
     </p>
 
     <div class="row" style="align-items:center">

@@ -143,13 +143,17 @@ async function refreshOnce() {
 // never what it is. The field shows a placeholder, not the secret.
 function paintSettings(s) {
   $('model').value = s.model || '';
+  $('baseUrl').value = s.baseUrl || '';
   $('openAtLogin').checked = s.openAtLogin;
   $('apiKey').placeholder = s.hasKey ? '•••••••• (set)' : 'sk-ant-…';
   $('apiKey').value = '';
   localOnly = s.localOnly;
+  // Say where the text is going, not just that it is going somewhere. A local
+  // endpoint is a materially different privacy position from Anthropic's.
+  const where = s.baseUrl ? ` · ${new URL(s.baseUrl).host}` : '';
   $('mode').textContent = s.localOnly
     ? 'local only · nothing leaves this machine'
-    : `model-assisted · ${s.model}`;
+    : `model-assisted · ${s.model}${where}`;
   enable('askPanel', !s.localOnly && Boolean(s.workspace));
 
   const notes = [];
@@ -180,6 +184,7 @@ $('saveSettings').onclick = () => {
   const key = $('apiKey').value;
   saveSettings({
     model: $('model').value.trim(),
+    baseUrl: $('baseUrl').value.trim(),
     // Undefined leaves the stored key alone; only send it when something was typed.
     ...(key ? { apiKey: key } : {}),
   });

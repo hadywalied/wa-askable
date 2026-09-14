@@ -60,7 +60,14 @@ deliberate about this: it means your contacts' messages leave your machine. If t
 acceptable, stay in local-only mode, or swap `Enricher` for a local model — it's one class with
 two methods.
 
-Switching between the two is live. Pasting or clearing a key in Settings takes effect
+**Any Anthropic-compatible endpoint works.** Set **API base URL** in Settings to point at a
+local agent, a proxy, or a self-hosted gateway — a base URL on its own is enough, since a
+service on `127.0.0.1` usually needs no credential. That gives you a third position worth
+knowing about: glosses and answers, with message text never leaving the machine. The header
+shows the host it is talking to, so you can tell at a glance where your contacts' messages are
+going.
+
+Switching between modes is live. Pasting or clearing a key or URL in Settings takes effect
 immediately; the WhatsApp connection is deliberately left alone so you never drop messages over
 a configuration change.
 
@@ -151,7 +158,18 @@ src/
 | `bun run dist` | installers into `release/` for the current OS |
 
 Installers for all three platforms are built by `.github/workflows/build.yml` — signed builds
-cannot be cross-compiled, so each OS builds on its own runner.
+cannot be cross-compiled, so each OS builds on its own runner. Both it and `release.yml` call
+the same `checks.yml`, so a release cannot ship something verified differently from CI.
+
+To cut a release:
+
+```bash
+git tag v0.1.1 && git push origin v0.1.1
+```
+
+That builds all three platforms and attaches the installers to a **draft** GitHub release — a
+human writes the notes and presses publish. Nothing is signed yet, so expect a Gatekeeper
+warning on macOS and SmartScreen on Windows until certificates are added.
 
 **`PLAN.md` is the design document**: why Electron over Tauri/PySide6, why the HTTP server was
 deleted rather than wrapped, and a build log of every trap hit along the way.

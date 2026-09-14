@@ -1,4 +1,4 @@
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 
@@ -47,10 +47,20 @@ step('electron binary', () => {
 });
 
 step('native modules', () => {
-  const rebuild = path.join(root, 'node_modules', '.bin', 'electron-rebuild');
-  if (!existsSync(rebuild)) throw new Error('@electron/rebuild not linked yet');
+  // Resolve the package's own CLI entry rather than node_modules/.bin. The .bin
+  // shim is extensionless on POSIX but .cmd/.ps1 on Windows, so existsSync on
+  // the bare name is false there and the Windows CI job failed with
+  // "@electron/rebuild not linked yet" while the package was sitting right
+  // there. Running the JS through node works identically on all three.
+  const pkgDir = path.join(root, 'node_modules', '@electron', 'rebuild');
+  if (!existsSync(pkgDir)) throw new Error('@electron/rebuild not linked yet');
   if (!existsSync(path.join(root, 'node_modules', 'better-sqlite3'))) {
     throw new Error('better-sqlite3 not linked yet');
   }
-  execFileSync(rebuild, ['-f', '-m', '.', '-w', 'better-sqlite3'], { stdio: 'inherit', cwd: root });
+  const binField = JSON.parse(readFileSync(path.join(pkgDir, 'package.json'), 'utf8')).bin;
+  const rel = typeof binField === 'string' ? binField : binField['electron-rebuild'];
+  execFileSync(process.execPath, [path.join(pkgDir, rel), '-f', '-m', '.', '-w', 'better-sqlite3'], {
+    stdio: 'inherit',
+    cwd: root,
+  });
 });

@@ -16,12 +16,19 @@ export interface Settings {
   lastWorkspace: string | null;
   /** Model used for glossing and answering. Not a secret. */
   model: string;
+  /**
+   * Base URL of an Anthropic-compatible API. Empty means Anthropic's own.
+   * Point it at a local agent (openclaw, a proxy, an offline gateway) to keep
+   * message text on this machine while still getting glosses and answers.
+   */
+  baseUrl: string;
 }
 
 const DEFAULTS: Settings = {
   openAtLogin: true,
   lastWorkspace: null,
   model: 'claude-sonnet-5',
+  baseUrl: '',
 };
 
 let cache: Settings | null = null;

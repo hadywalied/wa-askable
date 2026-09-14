@@ -88,7 +88,14 @@ linux:
 appImage:
   artifactName: ${name}-${version}-${arch}.${ext}
 
-# No auto-update server is configured. electron-updater can be added once there
-# is somewhere to publish to and a signing identity to trust; until then a
-# half-wired updater is worse than none.
-publish: null
+# Where `--publish always` sends artifacts. Nothing is uploaded unless a workflow
+# asks for it: build.yml passes --publish never, release.yml passes always.
+#
+# This is a release target, NOT auto-update. electron-updater is still not wired:
+# it needs a signing identity users can trust, and a half-wired updater that
+# silently installs unsigned builds is worse than none.
+publish:
+  provider: github
+  owner: hadywalied
+  repo: wa-askable
+  releaseType: draft

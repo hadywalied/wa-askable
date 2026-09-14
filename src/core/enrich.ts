@@ -38,8 +38,15 @@ export class Enricher {
     private readonly db: DB,
     apiKey: string | undefined,
     private readonly model: string,
+    baseUrl?: string,
   ) {
-    this.client = apiKey ? new Anthropic({ apiKey }) : null;
+    // A local, Anthropic-compatible endpoint usually needs no credential, so a
+    // base URL alone is enough to enable enrichment. The SDK still wants a
+    // non-empty apiKey, hence the placeholder.
+    this.client =
+      apiKey || baseUrl
+        ? new Anthropic({ apiKey: apiKey || 'local', ...(baseUrl ? { baseURL: baseUrl } : {}) })
+        : null;
   }
 
   get enabled(): boolean {

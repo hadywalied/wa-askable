@@ -94,8 +94,8 @@ async function boot(cfg: Config, root: string): Promise<Runtime> {
   const ws = await openWorkspace(root);
   const db = openDatabase(ws.dbPath);
   const wa = new WhatsAppArchive(db, ws.authDir, ws.mediaDir);
-  const enricher = new Enricher(db, cfg.anthropicApiKey, cfg.model);
-  const client = cfg.anthropicApiKey ? new Anthropic({ apiKey: cfg.anthropicApiKey }) : null;
+  const enricher = new Enricher(db, cfg.anthropicApiKey, cfg.model, cfg.baseUrl);
+  const client = makeClient();
 
   // Push, don't poll. The socket already fires on every captured message; the
   // renderer used to ask every 2.5s for something it could simply be told.
@@ -129,10 +129,18 @@ async function boot(cfg: Config, root: string): Promise<Runtime> {
  * alone — re-linking because someone pasted a key would be absurd, and would
  * drop messages while it reconnected.
  */
+function makeClient(): Anthropic | null {
+  if (!cfg.anthropicApiKey && !cfg.baseUrl) return null;
+  return new Anthropic({
+    apiKey: cfg.anthropicApiKey || 'local',
+    ...(cfg.baseUrl ? { baseURL: cfg.baseUrl } : {}),
+  });
+}
+
 function rebuildProvider(): void {
   if (!rt) return;
-  rt.enricher = new Enricher(rt.db, cfg.anthropicApiKey, cfg.model);
-  rt.client = cfg.anthropicApiKey ? new Anthropic({ apiKey: cfg.anthropicApiKey }) : null;
+  rt.enricher = new Enricher(rt.db, cfg.anthropicApiKey, cfg.model, cfg.baseUrl);
+  rt.client = makeClient();
 }
 
 async function describeSettings(message?: string): Promise<AppSettings & { message?: string }> {
@@ -142,6 +150,7 @@ async function describeSettings(message?: string): Promise<AppSettings & { messa
     openAtLogin: settings.openAtLogin,
     autostartEffective: settings.openAtLogin,
     model: cfg.model,
+    baseUrl: cfg.baseUrl,
     hasKey: key !== undefined,
     keyPersisted: keyPersisted,
     encryptionAvailable: await encryptionAvailable(),
@@ -169,6 +178,9 @@ export function registerIpc(initial: Config): void {
     }
     if (patch.model !== undefined && patch.model.trim()) {
       updateSettings({ model: patch.model.trim() });
+    }
+    if (patch.baseUrl !== undefined) {
+      updateSettings({ baseUrl: patch.baseUrl.trim() });
     }
     if (patch.openAtLogin !== undefined) {
       // Store what actually took effect, not what was asked for.

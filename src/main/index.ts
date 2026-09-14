@@ -222,6 +222,11 @@ async function runSmokeTest(win: BrowserWindow): Promise<void> {
 
     // Setting a key must flip local-only -> model-assisted with no relaunch.
     const s1 = await window.wa.saveSettings({ apiKey: 'sk-ant-test-not-a-real-key', model: 'claude-opus-5' });
+    // A base URL alone must enable model-assisted mode — a local agent usually
+    // needs no credential, and requiring one would make that case impossible.
+    const sB = await window.wa.saveSettings({ apiKey: null, baseUrl: 'http://127.0.0.1:9 ' });
+    out.baseUrlOnly = [sB.hasKey, sB.localOnly, sB.baseUrl].join('|');
+    await window.wa.saveSettings({ baseUrl: '' });
     out.afterSet = [s1.hasKey, s1.localOnly, s1.model].join('|');
     out.keyStillNotReturned = !JSON.stringify(s1).includes('sk-ant-');
     // ask() must now get past the local-only guard (it will fail on auth, which

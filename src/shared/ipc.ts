@@ -58,6 +58,8 @@ export interface AppSettings {
   openAtLogin: boolean;
   autostartEffective: boolean;
   model: string;
+  /** Empty means Anthropic's own endpoint. */
+  baseUrl: string;
   /** Never the key itself — only whether one is set. */
   hasKey: boolean;
   keyPersisted: boolean;
@@ -71,6 +73,7 @@ export interface AppSettings {
 export interface SettingsPatch {
   openAtLogin?: boolean;
   model?: string;
+  baseUrl?: string;
   /** '' or null clears the key. Undefined leaves it untouched. */
   apiKey?: string | null;
 }

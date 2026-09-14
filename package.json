@@ -23,7 +23,12 @@
     "test": "bun test test/",
     "setup": "node scripts/postinstall.mjs --strict",
     "smoke": "electron-vite build && WA_SMOKE=1 electron out/main/index.js",
-    "smoke:lifecycle": "electron-vite build && WA_SMOKE=lifecycle electron out/main/index.js"
+    "smoke:lifecycle": "electron-vite build && WA_SMOKE=lifecycle electron out/main/index.js",
+    "pack": "electron-vite build && electron-builder --dir",
+    "dist": "electron-vite build && electron-builder",
+    "dist:linux": "electron-vite build && electron-builder --linux",
+    "dist:win": "electron-vite build && electron-builder --win",
+    "dist:mac": "electron-vite build && electron-builder --mac"
   },
   "trustedDependencies": [
     "better-sqlite3",

@@ -13,18 +13,26 @@ import { getApiKey, getSettings } from './settings.js';
 export interface Config {
   anthropicApiKey: string | undefined;
   model: string;
+  /** Empty string means Anthropic's own endpoint. */
+  baseUrl: string;
   localOnly: boolean;
   defaultWorkspace: string;
 }
 
 export async function loadConfig(): Promise<Config> {
   const key = await getApiKey();
+  const baseUrl = getSettings().baseUrl.trim();
   return {
     anthropicApiKey: key,
     model: getSettings().model,
+    baseUrl,
     // Local-only is a real mode, not a degraded one: capture, folding, stemming
     // and keyword search all work, and nothing leaves the machine at all.
-    localOnly: !key,
+    //
+    // A custom base URL counts as configured even with no key: a local agent on
+    // 127.0.0.1 usually needs no credential, and refusing to work without one
+    // would make the local-provider case impossible.
+    localOnly: !key && !baseUrl,
     defaultWorkspace: path.join(app.getPath('userData'), 'workspace'),
   };
 }

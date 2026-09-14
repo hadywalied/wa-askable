@@ -874,3 +874,57 @@ afterSet  = true|false|claude-opus-5    afterClear = false|true
   because deb packaging requires one. Point it at the real repository before publishing.
 - macOS builds are untested — no Mac available here. The CI matrix will be the first real run.
 - Linux tray support still unverified outside WSLg (§14.7).
+
+---
+
+## 17. Post-Phase-4: provider base URL, release pipeline, and CI fixes
+
+### 17.1 Two CI bugs that only a real runner could find
+
+**`chrome-sandbox` must be root-owned 4755.** Electron ships it unprivileged, so on a fresh
+runner the browser process aborts with a FATAL before any test executes. Fixed by chown/chmod
+rather than `--no-sandbox`: the app ships with the sandbox on, and disabling it in CI would make
+the smoke tests pass while exercising a configuration nobody runs.
+
+**`node_modules/.bin/electron-rebuild` does not exist on Windows.** The shim is extensionless on
+POSIX but `.cmd`/`.ps1` on Windows, so `existsSync` on the bare name is false and the Windows job
+failed with "@electron/rebuild not linked yet" while the package sat right there.
+`scripts/postinstall.mjs` now resolves the package's own `bin` entry and runs it through `node`,
+which behaves identically on all three platforms.
+
+**And the `dist:*` scripts were missing from package.json** — written during Phase 4 but never
+committed, same failure mode as §16.1. Two lost manifest writes on `/mnt/d` in one project is
+enough evidence: **move the working copy off drvfs.**
+
+### 17.2 Provider base URL
+
+`Settings → API base URL` sets `baseURL` on the Anthropic SDK, so any compatible endpoint works —
+a local agent, a proxy, a self-hosted gateway.
+
+A base URL **alone** enables model-assisted mode: `localOnly = !key && !baseUrl`. A service on
+`127.0.0.1` usually needs no credential, and demanding one would make the local-provider case
+impossible. The SDK still wants a non-empty `apiKey`, so a `'local'` placeholder is passed.
+
+Threaded through both `Enricher` (glossing) and the agent client — missing either would leave
+half the pipeline still talking to Anthropic. The header now names the host it is configured
+against, because "model-assisted" describes two very different privacy positions.
+
+Asserted in the smoke test: `baseUrlOnly = false|false|http://127.0.0.1:9` — no key, not
+local-only, URL applied.
+
+### 17.3 Release pipeline
+
+`checks.yml` is a `workflow_call` reusable workflow holding the single definition of "verified":
+typecheck, unit tests, both smoke harnesses, and the bundle-size guard. `build.yml` and
+`release.yml` both call it, so **a release cannot ship something verified differently from CI**.
+
+- `build.yml` — push/PR. Builds installers with `--publish never` to prove they build.
+- `release.yml` — tag `v*`. Same checks, then `--publish always` into a **draft** GitHub release,
+  plus `upload-artifact` as a fallback if the publisher is ever misconfigured.
+
+Draft is deliberate: a human writes the notes and presses publish, so a mistyped tag is not
+instantly an installable download.
+
+`publish:` in `electron-builder.yml` is a **release target, not auto-update**. electron-updater
+stays unwired until there is a signing identity users can trust — an updater that silently
+installs unsigned builds is worse than none.
