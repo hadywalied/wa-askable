@@ -1157,3 +1157,75 @@ harness now uses its own temp workspace and the remaining gap is noted below.
 
 **Still open:** the smoke harness shares the real `userData` directory, so it can still touch
 settings. It should run with `app.setPath('userData', tmp)` under `WA_SMOKE`.
+
+---
+
+## 22. v0.4.0 — capture filters, link lifecycle, verified citations
+
+### 22.1 Capture filters
+
+`src/shared/capture.ts`: two axes, because they cost different things. **Sources** (direct,
+group, community/channel, broadcast) decide how much noise enters the archive — a few busy groups
+drown every real conversation. **Media** (text, image, video, audio, document, sticker) decides
+disk and bandwidth.
+
+The check happens **before** the download. Excluding a media type has to mean the bytes never
+arrive, otherwise the setting saves nothing that matters. The filter is read per message via a
+callback, so a change applies immediately rather than on the next reconnect.
+
+Two defaults worth stating: broadcasts off (almost entirely automated) and stickers off (no
+searchable content, still costs a download and a row). Turning *every* source or *every* media
+type off is refused — it silently stops all capture and looks identical to the app being broken.
+Stored filters are merged with defaults on load, so a filter written by an older version cannot
+have a missing key read as "do not capture".
+
+### 22.2 Link lifecycle — three actions, deliberately not one
+
+| | |
+|---|---|
+| **Pause capture** | stops archiving, keeps the session — resuming needs no QR |
+| **Reconnect now** | retries immediately, ignoring the backoff |
+| **Unlink** | ends the session and deletes credentials — needs a new QR (confirmed first) |
+
+Conflating pause and unlink is how someone loses a working link by pressing what they thought was
+a stop button.
+
+**Remote logout now clears credentials.** When the phone revokes the device, those credentials are
+dead: reconnecting with them loops forever, and leaving them on disk means the next launch retries
+a session WhatsApp already destroyed. They are cleared (keeping `creds.json.last-good`) and the
+app offers a QR instead of failing silently.
+
+### 22.3 Citations — verification is the whole feature
+
+Research is consistent that inline numbered markers tied to chunk identifiers are the workable
+pattern, and that **fabricated citations are the specific danger**: they manufacture confidence in
+a source that may not exist. Enforcement measurably cuts fabrication, but only if the citations
+are checked.
+
+So numbers are assigned **by us**, not the model: each tool result is tagged with a `cite` number
+as it comes back, and the registry maps number → message. After the answer, `usedCitations()` keeps
+only numbers that (a) appear in the text and (b) exist in the registry. Anything invented is
+dropped before rendering — never shown and never stored.
+
+The UI renders each verified marker as a clickable superscript plus a Sources list (sender, chat,
+timestamp, snippet); clicking jumps to that message in the Chats view and highlights it. Built by
+walking the text rather than via innerHTML, because every string involved was written by someone
+else.
+
+Citations persist with the conversation, which needed the first real **migration**:
+`CREATE TABLE IF NOT EXISTS` covers new tables but never new columns, so an existing archive keeps
+the old shape silently. `migrate()` checks `PRAGMA table_info` and adds the column.
+
+### 22.4 Bugs fixed from live use
+
+- **`null` printed on screen** when deleting a conversation. `openConversation()` called
+  `thread.replaceChildren()`, permanently detaching the empty-state element; the delete path then
+  passed `null` to `replaceChildren`, which the DOM stringifies. The empty state is now never
+  detached.
+- **Ask silently did nothing.** The send button was disabled whenever no provider was configured —
+  no explanation — and `send()` could reject before rendering anything if `newConversation()`
+  threw, so the input was not even cleared. Every failure now surfaces in the thread.
+- **Capture was invisible.** A sync bar shows live progress and offers Pause.
+- **The chat list showed 1,044 rows against 867 messages.** Empty chats are hidden by default
+  (with a toggle), rows carry a preview and relative timestamp, and the count line says how many
+  are hidden.

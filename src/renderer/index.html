@@ -141,6 +141,13 @@
   </aside>
 
   <main class="content">
+    <!-- Capture is invisible otherwise: messages arrive in bursts with no
+         indication of whether it is working, finished, or stuck. -->
+    <div id="syncBar" class="syncbar" hidden>
+      <span class="syncdot"></span>
+      <span id="syncText">Importing history…</span>
+      <button id="syncStop" class="ghost tiny-btn">Pause capture</button>
+    </div>
 
     <!-- ---------- ASK ---------- -->
     <section class="view" data-view="ask">
@@ -183,8 +190,10 @@
     <section class="view" data-view="chats" hidden>
       <div class="split">
         <div class="pane-list">
-          <div class="pane-head">
+          <div class="pane-head col">
             <input type="search" id="chatFilter" placeholder="Filter conversations…" spellcheck="false">
+            <label class="check tiny"><input type="checkbox" id="showEmpty"> Show chats with no messages</label>
+            <span class="tiny" id="chatCount"></span>
           </div>
           <div id="chatList" class="chat-list"></div>
         </div>
@@ -211,6 +220,7 @@
 
       <nav class="subnav" id="settingsNav">
         <button data-pane="connection" class="active">Connection</button>
+        <button data-pane="capture">Capture</button>
         <button data-pane="workspace">Workspace</button>
         <button data-pane="indexing">Indexing</button>
         <button data-pane="provider">AI provider</button>
@@ -220,6 +230,42 @@
       <div class="pane" data-pane="connection">
         <h3>WhatsApp connection</h3>
         <div id="linkHost"></div>
+
+        <h3 style="margin-top:26px">Controls</h3>
+        <div class="control-grid">
+          <div>
+            <button id="ctlPause" class="ghost">Pause capture</button>
+            <p class="hint">Stops archiving but keeps the link. Resuming needs no QR code.</p>
+          </div>
+          <div>
+            <button id="ctlRefresh" class="ghost">Reconnect now</button>
+            <p class="hint">Retries immediately instead of waiting out the backoff.</p>
+          </div>
+          <div>
+            <button id="ctlUnlink" class="ghost danger">Unlink this device</button>
+            <p class="hint">
+              Ends the session and removes the stored credentials. You will need to scan a new
+              QR code. Your archive is not touched.
+            </p>
+          </div>
+        </div>
+        <p class="hint" id="ctlNote"></p>
+      </div>
+
+      <div class="pane" data-pane="capture" hidden>
+        <h3>What to capture</h3>
+        <p class="hint">
+          Applies to messages arriving from now on — it changes nothing already archived.
+          Excluded media is never downloaded, so turning things off saves disk and bandwidth too.
+        </p>
+
+        <h4 class="group-head">Conversations</h4>
+        <div id="captureSources" class="check-grid"></div>
+
+        <h4 class="group-head">Message types</h4>
+        <div id="captureMedia" class="check-grid"></div>
+
+        <p class="hint" id="captureNote"></p>
       </div>
 
       <div class="pane" data-pane="workspace" hidden>

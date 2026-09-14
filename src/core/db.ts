@@ -137,7 +137,24 @@ export type DB = Database.Database;
 export function openDatabase(dbPath: string): DB {
   const db = new Database(dbPath);
   db.exec(SCHEMA);
+  migrate(db);
   return db;
+}
+
+/**
+ * Additive migrations for archives created by an earlier version.
+ *
+ * CREATE TABLE IF NOT EXISTS covers new tables but never new columns, so an
+ * existing archive silently keeps the old shape. Checked rather than attempted,
+ * because a failed ALTER here would take the whole app down on startup.
+ */
+function migrate(db: DB): void {
+  const columns = (table: string): string[] =>
+    (db.pragma(`table_info(${table})`) as { name: string }[]).map((c) => c.name);
+
+  if (!columns('conversation_turns').includes('citations')) {
+    db.exec('ALTER TABLE conversation_turns ADD COLUMN citations TEXT');
+  }
 }
 
 export function upsertChat(
@@ -236,6 +253,8 @@ export interface TurnRow {
   role: 'user' | 'assistant';
   content: string;
   toolCalls: { name: string; input: unknown }[];
+  /** Verified sources for this answer, so reopening a chat keeps its links. */
+  citations: unknown[];
   ts: number;
 }
 
@@ -263,14 +282,17 @@ export function createConversation(db: DB, title = 'New chat'): ConversationRow 
 export function conversationTurns(db: DB, conversationId: string): TurnRow[] {
   const rows = db
     .prepare(
-      `SELECT role, content, tool_calls AS toolCalls, ts
+      `SELECT role, content, tool_calls AS toolCalls, citations, ts
          FROM conversation_turns WHERE conversation_id = ? ORDER BY id ASC`,
     )
-    .all(conversationId) as { role: string; content: string; toolCalls: string | null; ts: number }[];
+    .all(conversationId) as {
+    role: string; content: string; toolCalls: string | null; citations: string | null; ts: number;
+  }[];
   return rows.map((r) => ({
     role: r.role as 'user' | 'assistant',
     content: r.content,
     toolCalls: r.toolCalls ? (JSON.parse(r.toolCalls) as TurnRow['toolCalls']) : [],
+    citations: r.citations ? (JSON.parse(r.citations) as unknown[]) : [],
     ts: r.ts,
   }));
 }
@@ -278,17 +300,18 @@ export function conversationTurns(db: DB, conversationId: string): TurnRow[] {
 export function appendTurn(
   db: DB,
   conversationId: string,
-  turn: { role: 'user' | 'assistant'; content: string; toolCalls?: unknown[] },
+  turn: { role: 'user' | 'assistant'; content: string; toolCalls?: unknown[]; citations?: unknown[] },
 ): void {
   const now = Date.now();
   db.prepare(
-    `INSERT INTO conversation_turns (conversation_id, role, content, tool_calls, ts)
-     VALUES (?, ?, ?, ?, ?)`,
+    `INSERT INTO conversation_turns (conversation_id, role, content, tool_calls, citations, ts)
+     VALUES (?, ?, ?, ?, ?, ?)`,
   ).run(
     conversationId,
     turn.role,
     turn.content,
     turn.toolCalls?.length ? JSON.stringify(turn.toolCalls) : null,
+    turn.citations?.length ? JSON.stringify(turn.citations) : null,
     now,
   );
   db.prepare('UPDATE conversations SET updated_at = ? WHERE id = ?').run(now, conversationId);

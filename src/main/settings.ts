@@ -1,5 +1,6 @@
 import { app, safeStorage } from 'electron';
 import type { ProviderKind } from '../shared/providers.js';
+import { DEFAULT_CAPTURE, type CaptureFilter } from '../shared/capture.js';
 import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
@@ -27,6 +28,8 @@ export interface Settings {
    * message text on this machine while still getting glosses and answers.
    */
   baseUrl: string;
+  /** Which chats and which media types are worth archiving. */
+  capture: CaptureFilter;
 }
 
 const DEFAULTS: Settings = {
@@ -36,6 +39,7 @@ const DEFAULTS: Settings = {
   providerId: 'anthropic',
   providerKind: 'anthropic',
   baseUrl: '',
+  capture: DEFAULT_CAPTURE,
 };
 
 let cache: Settings | null = null;
@@ -46,7 +50,18 @@ export function getSettings(): Settings {
   if (cache) return cache;
   try {
     if (existsSync(file())) {
-      cache = { ...DEFAULTS, ...(JSON.parse(readFileSync(file(), 'utf8')) as Partial<Settings>) };
+      const stored = JSON.parse(readFileSync(file(), 'utf8')) as Partial<Settings>;
+      cache = {
+        ...DEFAULTS,
+        ...stored,
+        // Merge rather than replace: a filter written by an older version is
+        // missing any newly added source or media key, and a missing key must
+        // not silently mean "do not capture".
+        capture: {
+          sources: { ...DEFAULTS.capture.sources, ...(stored.capture?.sources ?? {}) },
+          media: { ...DEFAULTS.capture.media, ...(stored.capture?.media ?? {}) },
+        },
+      };
       return cache;
     }
   } catch {

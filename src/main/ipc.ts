@@ -106,7 +106,9 @@ async function boot(cfg: Config, root: string): Promise<Runtime> {
 
   const ws = await openWorkspace(root);
   const db = openDatabase(ws.dbPath);
-  const wa = new WhatsAppArchive(db, ws.authDir, ws.mediaDir);
+  // The filter is read per message, so changing it takes effect immediately
+  // rather than on the next reconnect.
+  const wa = new WhatsAppArchive(db, ws.authDir, ws.mediaDir, () => getSettings().capture);
   const provider = currentProvider();
   const enricher = new Enricher(db, provider, cfg.model);
 
@@ -174,6 +176,7 @@ async function describeSettings(message?: string): Promise<AppSettings & { messa
     providerKind: cfg.providerKind,
     presets: PROVIDER_PRESETS,
     localEndpoint: isLocalEndpoint(cfg.baseUrl),
+    capture: getSettings().capture,
     hasKey: key !== undefined,
     keyPersisted: keyPersisted,
     encryptionAvailable: await encryptionAvailable(),
@@ -204,6 +207,9 @@ export function registerIpc(initial: Config): void {
     }
     if (patch.baseUrl !== undefined) {
       updateSettings({ baseUrl: patch.baseUrl.trim() });
+    }
+    if (patch.capture !== undefined) {
+      updateSettings({ capture: patch.capture });
     }
     if (patch.providerKind !== undefined) {
       updateSettings({ providerKind: patch.providerKind });
@@ -305,6 +311,21 @@ export function registerIpc(initial: Config): void {
     return need().wa.getStatus();
   });
 
+  // Three distinct actions, deliberately not one button:
+  // pause keeps the session, refresh retries now, unlink destroys it.
+  ipcMain.handle(CHANNELS.whatsappPause, async () => {
+    await need().wa.pause();
+    return need().wa.getStatus();
+  });
+  ipcMain.handle(CHANNELS.whatsappRefresh, async () => {
+    await need().wa.refresh();
+    return need().wa.getStatus();
+  });
+  ipcMain.handle(CHANNELS.whatsappUnlink, async () => {
+    await need().wa.unlink();
+    return need().wa.getStatus();
+  });
+
   /**
    * Note what this does NOT do: it does not fetch messages. The socket already
    * pushed those the moment they arrived. This drains the enrichment backlog
@@ -319,7 +340,10 @@ export function registerIpc(initial: Config): void {
     return { ...result, stats: s };
   });
 
-  ipcMain.handle(CHANNELS.chatsList, () => ({ chats: listChats(need().db) }));
+  ipcMain.handle(CHANNELS.chatsList, (_e, includeEmpty?: boolean) => ({
+    chats: listChats(need().db, 500, !includeEmpty),
+    totalChats: stats(need().db).chats,
+  }));
 
   ipcMain.handle(CHANNELS.searchRun, (_e, args: SearchArgs) => ({
     hits: searchMessages(need().db, args),
@@ -360,6 +384,7 @@ export function registerIpc(initial: Config): void {
         role: 'assistant',
         content: reply.answer,
         toolCalls: reply.toolCalls,
+        citations: reply.citations,
       });
     }
     return reply;

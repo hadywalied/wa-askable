@@ -57,15 +57,29 @@ function toMatchExpression(query: string): string {
     .join(' AND ');
 }
 
-export function listChats(db: DB, limit = 200) {
+/**
+ * Conversations for the browser list.
+ *
+ * WhatsApp's initial push registers far more chats than it sends messages for —
+ * 1044 chats against 867 messages here — so a plain list is mostly empty rows.
+ * `withMessagesOnly` keeps the default view to things worth opening, and the
+ * preview makes a row identifiable without clicking it.
+ */
+export function listChats(db: DB, limit = 500, withMessagesOnly = true) {
   return db
     .prepare(
       `SELECT c.jid, c.name, c.is_group AS isGroup, c.last_message_at AS lastMessageAt,
-              COUNT(m.id) AS messageCount
+              COUNT(m.id) AS messageCount,
+              (SELECT m2.body_raw FROM messages m2
+                WHERE m2.chat_jid = c.jid AND m2.body_raw <> ''
+                ORDER BY m2.ts DESC LIMIT 1) AS preview,
+              (SELECT m3.ts FROM messages m3
+                WHERE m3.chat_jid = c.jid ORDER BY m3.ts DESC LIMIT 1) AS lastTs
          FROM chats c
          LEFT JOIN messages m ON m.chat_jid = c.jid
         GROUP BY c.jid
-        ORDER BY c.last_message_at DESC
+       ${withMessagesOnly ? 'HAVING COUNT(m.id) > 0' : ''}
+        ORDER BY COALESCE(lastTs, c.last_message_at) DESC
         LIMIT ?`,
     )
     .all(limit);

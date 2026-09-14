@@ -28,6 +28,9 @@ export const CHANNELS = {
   convCreate: 'conv:create',
   convGet: 'conv:get',
   convDelete: 'conv:delete',
+  whatsappPause: 'whatsapp:pause',
+  whatsappRefresh: 'whatsapp:refresh',
+  whatsappUnlink: 'whatsapp:unlink',
 } as const;
 
 /** Pushed from main; the renderer no longer polls. */
@@ -65,6 +68,7 @@ export interface WhatsAppStatus {
 }
 
 import type { ProviderKind, ProviderPreset } from './providers.js';
+import type { CaptureFilter } from './capture.js';
 
 export interface AppSettings {
   providerId: string;
@@ -86,6 +90,7 @@ export interface AppSettings {
   localOnly: boolean;
   workspace: string | null;
   defaultWorkspace: string;
+  capture: CaptureFilter;
 }
 
 export interface SettingsPatch {
@@ -94,6 +99,7 @@ export interface SettingsPatch {
   baseUrl?: string;
   providerId?: string;
   providerKind?: ProviderKind;
+  capture?: CaptureFilter;
   /** '' or null clears the key. Undefined leaves it untouched. */
   apiKey?: string | null;
 }

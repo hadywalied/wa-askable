@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events';
 import { createHash, randomBytes } from 'node:crypto';
-import { copyFile, mkdir, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, readdir, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import {
   // NAMED import, not default. Baileys is CommonJS with no real default export:
@@ -23,6 +23,7 @@ import { toDataURL } from 'qrcode';
 import type { DB, MessageKind } from './db.js';
 import { insertMessage, rememberMedia, upsertChat } from './db.js';
 import { foldForSearch, stemsForSearch } from './normalize.js';
+import { DEFAULT_CAPTURE, shouldCapture, type CaptureFilter } from '../shared/capture.js';
 
 /**
  * The archive's connection to WhatsApp.
@@ -161,6 +162,8 @@ export class WhatsAppArchive extends EventEmitter {
     private readonly db: DB,
     private readonly authDir: string,
     private readonly mediaDir: string,
+    /** Read on every message, so a settings change applies without reconnecting. */
+    private readonly filter: () => CaptureFilter = () => DEFAULT_CAPTURE,
   ) {
     super();
   }
@@ -382,9 +385,20 @@ export class WhatsAppArchive extends EventEmitter {
         this.clearWatchdog();
         this.connecting = false;
         if (code === DisconnectReason.loggedOut) {
-          // The link was revoked from the phone. Credentials are dead; the user
-          // has to scan again. Reconnecting in a loop here would be pointless.
-          this.setStatus({ state: 'logged_out', lastError: 'Device was unlinked from the phone.' });
+          // Revoked from the phone's Linked devices screen. Those credentials
+          // are dead: reconnecting with them loops forever, and leaving them on
+          // disk means the next launch retries a session WhatsApp has already
+          // destroyed. Clear them so the app offers a QR instead of silently
+          // failing — the archive itself is untouched.
+          this.emit('log', 'unlinked from the phone; clearing dead credentials');
+          void this.clearCredentials().then(() =>
+            this.setStatus({
+              state: 'logged_out',
+              lastError:
+                'This device was unlinked from your phone, so capture has stopped. ' +
+                'Everything already archived is safe. Link again to resume.',
+            }),
+          );
           return;
         }
         this.setStatus({
@@ -428,6 +442,65 @@ export class WhatsAppArchive extends EventEmitter {
       pairingCode: undefined,
       lastError: undefined,
     });
+  }
+
+  /**
+   * Stop capturing but keep the session, so resuming needs no QR.
+   * This is the reversible one; unlink() is not.
+   */
+  async pause(): Promise<void> {
+    this.stopping = true;
+    this.clearRetry();
+    this.teardown();
+    this.emit('log', 'capture paused by user');
+    this.setStatus({ state: 'idle', qrDataUrl: undefined, lastError: undefined });
+  }
+
+  /** Force a fresh connection attempt now, ignoring any pending backoff. */
+  async refresh(): Promise<void> {
+    this.emit('log', 'connection refresh requested');
+    this.attempt = 0;
+    this.teardown();
+    await this.connect(true);
+  }
+
+  /**
+   * Unlink: destroy the session entirely. Requires a new QR afterwards.
+   *
+   * Deliberately separate from pause(). Conflating them is how a user loses a
+   * working link by clicking what they thought was a stop button.
+   */
+  async unlink(): Promise<void> {
+    this.stopping = true;
+    this.clearRetry();
+    try {
+      await this.sock?.logout();
+    } catch {
+      // Already gone, or offline. The local credentials still have to go.
+    }
+    this.teardown();
+    await this.clearCredentials();
+    this.attempt = 0;
+    this.emit('log', 'unlinked by user; credentials cleared');
+    this.setStatus({
+      state: 'idle',
+      qrDataUrl: undefined,
+      pairingCode: undefined,
+      lastError: undefined,
+      selfJid: undefined,
+    });
+  }
+
+  /** Remove session files, keeping the last-good snapshot for recovery. */
+  private async clearCredentials(): Promise<void> {
+    try {
+      for (const name of await readdir(this.authDir)) {
+        if (name === 'creds.json.last-good') continue;
+        await rm(path.join(this.authDir, name), { force: true });
+      }
+    } catch {
+      /* nothing to clear */
+    }
   }
 
   /** Snapshot creds.json after a connection that actually worked. */
@@ -498,6 +571,15 @@ export class WhatsAppArchive extends EventEmitter {
     upsertChat(this.db, { jid, name: msg.pushName ?? null, isGroup, ts });
 
     const kind = messageKind(msg);
+
+    // Checked BEFORE the download. Excluding a media type has to mean the bytes
+    // never arrive, not that they are fetched and then ignored — otherwise the
+    // setting saves nothing that matters.
+    if (!shouldCapture(this.filter(), jid, kind)) {
+      this.emit('filtered', { chatJid: jid, kind });
+      return;
+    }
+
     let mediaSha: string | null = null;
 
     if (kind === 'image' || kind === 'video' || kind === 'audio' || kind === 'document') {

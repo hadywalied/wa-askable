@@ -295,7 +295,7 @@ async function runSmokeTest(win: BrowserWindow): Promise<void> {
 
     document.querySelector('.nav-item[data-view="settings"]').click();
     out.settingsRouted = !document.querySelector('.view[data-view="settings"]').hidden;
-    for (const pane of ['connection', 'workspace', 'indexing', 'provider', 'about']) {
+    for (const pane of ['connection', 'capture', 'workspace', 'indexing', 'provider', 'about']) {
       document.querySelector('#settingsNav [data-pane="' + pane + '"]').click();
       if (document.querySelector('.pane[data-pane="' + pane + '"]').hidden) {
         out.paneFailed = pane;
@@ -304,12 +304,50 @@ async function runSmokeTest(win: BrowserWindow): Promise<void> {
     out.panesOk = !out.paneFailed;
     out.linkStageMounted = Boolean(document.querySelector('#linkHost .link-stage'));
 
+    // capture filters render and persist
+    document.querySelector('#settingsNav [data-pane="capture"]').click();
+    out.captureBoxes = document.querySelectorAll('[data-cap]').length;
+    const srcBox = document.querySelector('[data-cap="sources"][data-key="broadcast"]');
+    srcBox.checked = true;
+    srcBox.dispatchEvent(new Event('change', { bubbles: true }));
+    await new Promise((r) => setTimeout(r, 300));
+    out.captureSaved = (await window.wa.getSettings()).capture.sources.broadcast === true;
+    // turning every source off must be refused, not silently stop all capture
+    for (const el of document.querySelectorAll('[data-cap="sources"]')) {
+      el.checked = false;
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+      await new Promise((r) => setTimeout(r, 60));
+    }
+    const remaining = (await window.wa.getSettings()).capture.sources;
+    out.refusedEmptyFilter = Object.values(remaining).some(Boolean);
+
+    // link lifecycle controls exist and are distinct actions
+    out.controls = ['ctlPause', 'ctlRefresh', 'ctlUnlink'].every((id) => Boolean($(id)));
+
+    // Regression: openConversation() used to detach #askEmpty, so a later
+    // restore passed null and the DOM printed the word "null" on screen.
     const conv = await window.wa.newConversation();
     const before = (await window.wa.listConversations()).conversations.length;
     await window.wa.getConversation(conv.id);
     await window.wa.deleteConversation(conv.id);
     const after = (await window.wa.listConversations()).conversations.length;
     out.conversations = before + '->' + after;
+
+    document.querySelector('.nav-item[data-view="ask"]').click();
+    await window.wa.newConversation();
+    const list = (await window.wa.listConversations()).conversations;
+    const cid = list[0].id;
+    $('convList').innerHTML = '';
+    const row = document.createElement('div');
+    row.className = 'conv-row'; row.dataset.conv = cid;
+    $('convList').appendChild(row);
+    row.click();
+    await new Promise((r) => setTimeout(r, 250));
+    out.emptyStateSurvives = Boolean($('askEmpty'));
+    $('deleteConv').click();
+    await new Promise((r) => setTimeout(r, 250));
+    out.noNullRendered = !$('thread').textContent.trim().startsWith('null');
+    out.emptyStateAfterDelete = Boolean($('askEmpty'));
 
     document.querySelector('.nav-item[data-view="chats"]').click();
     out.chatsRouted = !document.querySelector('.view[data-view="chats"]').hidden;

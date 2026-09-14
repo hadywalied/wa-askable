@@ -54,7 +54,12 @@ const api = {
   disconnect: (): Promise<WhatsAppStatus> => invoke(CHANNELS.whatsappDisconnect),
 
   refresh: (): Promise<RefreshResult> => invoke(CHANNELS.refreshRun),
-  listChats: (): Promise<{ chats: unknown[] }> => invoke(CHANNELS.chatsList),
+
+  pauseCapture: (): Promise<WhatsAppStatus> => invoke(CHANNELS.whatsappPause),
+  refreshConnection: (): Promise<WhatsAppStatus> => invoke(CHANNELS.whatsappRefresh),
+  unlinkDevice: (): Promise<WhatsAppStatus> => invoke(CHANNELS.whatsappUnlink),
+  listChats: (includeEmpty = false): Promise<{ chats: unknown[]; totalChats: number }> =>
+    invoke(CHANNELS.chatsList, includeEmpty),
   search: (args: SearchArgs): Promise<{ hits: unknown[] }> =>
     invoke(CHANNELS.searchRun, args),
   ask: (question: string, conversationId?: string): Promise<AskResult> =>

@@ -1,4 +1,5 @@
 import { mountLink } from './link.js';
+import { SOURCE_LABELS, MEDIA_LABELS } from '../shared/capture.js';
 
 // There is no server, no port and no session token. Everything goes over the
 // contextBridge in preload/index.ts — a fixed set of named calls.
@@ -16,6 +17,7 @@ const state = {
   status: null,
   stats: null,
   chats: [],
+  totalChats: 0,
   activeChat: null,
   conversations: [],
   activeConv: null,
@@ -66,9 +68,37 @@ function paintStatus(c) {
   const [cls, text] = map[c.state] || ['', c.state];
   $('dot').className = 'dot ' + cls;
   $('connText').textContent = text;
+  paintSyncBar(c);
   links.settings?.render(c);
   links.onboarding?.render(c);
 }
+
+let lastCaptureAt = 0;
+let lastCaptureCount = 0;
+
+/**
+ * Capture is otherwise invisible: messages land in bursts and nothing says
+ * whether it is working, finished, or wedged. Treat "the count moved in the
+ * last 8 seconds" as actively importing.
+ */
+function paintSyncBar(c) {
+  const n = c.capturedThisSession || 0;
+  if (n > lastCaptureCount) {
+    lastCaptureCount = n;
+    lastCaptureAt = Date.now();
+  }
+  const active = c.state === 'open' && n > 0 && Date.now() - lastCaptureAt < 8000;
+  $('syncBar').hidden = !(active || (c.state === 'open' && n > 0 && Date.now() - lastCaptureAt < 30000));
+  $('syncText').textContent = active
+    ? `Importing… ${fmt(n)} messages captured this session`
+    : `${fmt(n)} messages captured this session · up to date`;
+  $('syncBar').querySelector('.syncdot').style.animationPlayState = active ? 'running' : 'paused';
+}
+
+$('syncStop').onclick = async () => {
+  await wa.disconnect();
+  $('syncBar').hidden = true;
+};
 
 function paintStats(s) {
   if (!s) return;
@@ -127,13 +157,16 @@ function paintSettings(s) {
   $('askNote').textContent = s.localOnly
     ? 'Ask needs an AI provider. Settings → AI provider. Capture and keyword search work without one.'
     : 'Voice notes and images are described automatically and are often wrong — answers point you at the original rather than quote it.';
-  $('send').disabled = s.localOnly;
+  // Deliberately NOT disabled when local-only: a dead button teaches nothing.
+  // send() explains what is missing instead.
+  $('send').disabled = false;
 
   const notes = [];
   if (s.message) notes.push(s.message);
   if (s.keyFromEnv) notes.push('ANTHROPIC_API_KEY in the environment overrides this field.');
   if (s.hasKey && !s.encryptionAvailable) notes.push('No OS keystore here — the key is kept for this session only.');
   $('settingsNote').textContent = notes.join(' ');
+  paintCapture(s);
 }
 
 // ---------------------------------------------------------------- ask
@@ -167,12 +200,13 @@ async function openConversation(id) {
   renderConvList();
 
   const { turns } = await wa.getConversation(id);
-  $('thread').replaceChildren();
+  clearThread();
   if (!turns.length) {
-    $('thread').appendChild($('askEmpty'));
     $('askEmpty').hidden = false;
   } else {
-    for (const t of turns) addTurn(t.role === 'user' ? 'You' : 'Archive', t.content, t.toolCalls);
+    for (const t of turns) {
+      addTurn(t.role === 'user' ? 'You' : 'Archive', t.content, t.toolCalls, t.citations);
+    }
   }
 }
 
@@ -191,17 +225,69 @@ $('deleteConv').onclick = async () => {
   state.activeConv = null;
   $('convTitle').textContent = 'New chat';
   $('deleteConv').hidden = true;
-  $('thread').replaceChildren($('askEmpty'));
+  clearThread();
   $('askEmpty').hidden = false;
   await loadConversations();
 };
 
-function addTurn(who, text, tools) {
+/**
+ * Remove the turns but keep the empty-state element attached.
+ *
+ * replaceChildren() used to detach #askEmpty permanently, so the next call that
+ * tried to restore it passed null — and the DOM stringifies that, printing the
+ * word "null" on screen.
+ */
+function clearThread() {
+  for (const child of [...$('thread').children]) {
+    if (child.id !== 'askEmpty') child.remove();
+  }
+}
+
+function addTurn(who, text, tools, citations) {
   $('askEmpty').hidden = true;
   const el = document.createElement('div');
   el.className = 'turn ' + (who === 'You' ? 'you' : 'bot');
   el.innerHTML = `<div class="who">${who}</div>`;
-  el.appendChild(document.createTextNode(text));
+
+  if (citations?.length) {
+    // Turn each verified [n] into something clickable. Built by walking the
+    // text rather than with innerHTML, so message content can never inject
+    // markup — every string here was written by someone else.
+    const byN = new Map(citations.map((c) => [String(c.n), c]));
+    let last = 0;
+    for (const m of text.matchAll(/\[(\d{1,3})\]/g)) {
+      const c = byN.get(m[1]);
+      if (!c) continue;
+      el.appendChild(document.createTextNode(text.slice(last, m.index)));
+      const sup = document.createElement('span');
+      sup.className = 'cite';
+      sup.textContent = `[${c.n}]`;
+      sup.title = `${c.senderName || 'unknown'} · ${new Date(c.ts).toLocaleString()}`;
+      sup.onclick = () => jumpToMessage(c);
+      el.appendChild(sup);
+      last = m.index + m[0].length;
+    }
+    el.appendChild(document.createTextNode(text.slice(last)));
+
+    const box = document.createElement('div');
+    box.className = 'sources';
+    box.innerHTML = '<div class="sources-head">Sources</div>';
+    for (const c of citations) {
+      const b = document.createElement('button');
+      b.className = 'src';
+      b.innerHTML =
+        `<b>[${c.n}]</b> <span class="who">${escapeHtml(c.senderName || 'unknown')}</span>` +
+        ` · ${escapeHtml(c.chatName || c.chatJid.split('@')[0])}` +
+        ` · ${new Date(c.ts).toLocaleString()}` +
+        `<span class="snip">${escapeHtml(c.snippet)}</span>`;
+      b.onclick = () => jumpToMessage(c);
+      box.appendChild(b);
+    }
+    el.appendChild(box);
+  } else {
+    el.appendChild(document.createTextNode(text));
+  }
+
   if (tools?.length) {
     const t = document.createElement('div');
     t.className = 'tools';
@@ -217,12 +303,28 @@ async function send() {
   const q = $('q').value.trim();
   if (!q) return;
 
+  if (state.settings?.localOnly) {
+    // Previously the button was just disabled, so pressing it did nothing and
+    // explained nothing. Say what is missing and where to fix it.
+    $('askEmpty').hidden = true;
+    addTurn('Archive', 'No AI provider is configured yet, so I cannot answer questions. Open Settings → AI provider to set one up. Searching the archive works without one.');
+    return;
+  }
+
   // Asking without having picked a conversation starts one, so the first
-  // question is never lost.
+  // question is never lost. Wrapped: if this throws, the old code rejected
+  // out of send() before rendering anything at all — the input was not even
+  // cleared, which looked exactly like the button being dead.
   if (!state.activeConv) {
-    const conv = await wa.newConversation();
-    state.activeConv = conv.id;
-    $('deleteConv').hidden = false;
+    try {
+      const conv = await wa.newConversation();
+      state.activeConv = conv.id;
+      $('deleteConv').hidden = false;
+    } catch (e) {
+      $('askEmpty').hidden = true;
+      addTurn('Archive', `Could not start a conversation: ${e.message}`);
+      return;
+    }
   }
 
   $('q').value = '';
@@ -237,7 +339,7 @@ async function send() {
   try {
     const r = await wa.ask(q, state.activeConv);
     pending.remove();
-    addTurn('Archive', r.answer, r.toolCalls);
+    addTurn('Archive', r.answer, r.toolCalls, r.citations);
   } catch (e) {
     pending.remove();
     addTurn('Archive', e.message);
@@ -270,21 +372,37 @@ $('suggestions').addEventListener('click', (e) => {
 // ---------------------------------------------------------------- chats
 
 async function loadChats() {
-  const { chats } = await wa.listChats();
+  const { chats, totalChats } = await wa.listChats($('showEmpty').checked);
   state.chats = chats;
+  state.totalChats = totalChats;
   renderChatList();
+}
+$('showEmpty').onchange = loadChats;
+
+function relTime(ts) {
+  if (!ts) return '';
+  const d = new Date(ts);
+  const days = (Date.now() - ts) / 86400000;
+  if (days < 1) return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  if (days < 7) return d.toLocaleDateString([], { weekday: 'short' });
+  return d.toLocaleDateString();
 }
 
 function renderChatList() {
   const filter = $('chatFilter').value.trim().toLowerCase();
   const rows = state.chats.filter((c) => !filter || (c.name || c.jid).toLowerCase().includes(filter));
+  $('chatCount').textContent = state.totalChats
+    ? `${fmt(rows.length)} shown · ${fmt(state.totalChats)} known to WhatsApp`
+    : '';
   $('chatList').innerHTML = rows.length
     ? rows.map((c) => `
         <div class="chat-row${c.jid === state.activeChat ? ' active' : ''}" data-jid="${c.jid}">
-          <b>${escapeHtml(c.name || c.jid.split('@')[0])}</b>
-          <span>${fmt(c.messageCount)} messages${c.isGroup ? ' · group' : ''}</span>
+          <b><span class="when">${relTime(c.lastTs || c.lastMessageAt)}</span>${escapeHtml(c.name || c.jid.split('@')[0])}</b>
+          <span class="preview">${c.preview ? escapeHtml(c.preview.slice(0, 80)) : `${fmt(c.messageCount)} messages`}</span>
         </div>`).join('')
-    : '<div class="empty" style="padding:22px"><p>No conversations yet.</p></div>';
+    : `<div class="empty" style="padding:22px"><p class="tiny">${
+        state.totalChats ? 'No messages captured in these chats yet.' : 'Nothing captured yet.'
+      }</p></div>`;
 }
 $('chatFilter').addEventListener('input', renderChatList);
 
@@ -292,6 +410,18 @@ $('chatList').addEventListener('click', (e) => {
   const jid = e.target.closest('[data-jid]')?.dataset.jid;
   if (jid) void openChat(jid);
 });
+
+/** Open the cited message in its conversation and highlight it. */
+async function jumpToMessage(c) {
+  go('chats');
+  await openChat(c.chatJid);
+  const el = document.querySelector(`[data-mid="${CSS.escape(c.id)}"]`);
+  if (el) {
+    el.scrollIntoView({ block: 'center' });
+    el.classList.add('hit');
+    setTimeout(() => el.classList.remove('hit'), 2500);
+  }
+}
 
 async function openChat(jid) {
   state.activeChat = jid;
@@ -321,7 +451,7 @@ function renderMessages(msgs, showChat = false) {
     return;
   }
   $('messages').innerHTML = msgs.map((m) => `
-    <div class="msg${m.fromMe ? ' mine' : ''}">
+    <div class="msg${m.fromMe ? ' mine' : ''}" data-mid="${escapeHtml(m.id || '')}">
       <div class="meta">${escapeHtml(m.senderName || '')}${showChat && m.chatName ? ' · ' + escapeHtml(m.chatName) : ''} · ${new Date(m.ts).toLocaleString()}</div>
       ${escapeHtml(m.body || '')}${m.kind && m.kind !== 'text' ? `<div class="meta">[${m.kind}]</div>` : ''}
     </div>`).join('');
@@ -420,6 +550,61 @@ $('obUseFolder').onclick = async () => {
   }
 };
 $('obSkip').onclick = finishOnboarding;
+
+// --- capture settings ---------------------------------------------------
+
+function paintCapture(s) {
+  const cap = s.capture;
+  if (!cap) return;
+  const box = (group, key, label, on) =>
+    `<label><input type="checkbox" data-cap="${group}" data-key="${key}"${on ? ' checked' : ''}> ${label}</label>`;
+  $('captureSources').innerHTML = Object.entries(SOURCE_LABELS)
+    .map(([k, label]) => box('sources', k, label, cap.sources[k])).join('');
+  $('captureMedia').innerHTML = Object.entries(MEDIA_LABELS)
+    .map(([k, label]) => box('media', k, label, cap.media[k])).join('');
+}
+
+async function onCaptureToggle(e) {
+  const el = e.target.closest('[data-cap]');
+  if (!el) return;
+  const capture = structuredClone(state.settings.capture);
+  capture[el.dataset.cap][el.dataset.key] = el.checked;
+
+  // Turning everything off in a group silently stops all capture, which looks
+  // identical to the app being broken. Refuse it and say why.
+  const anySource = Object.values(capture.sources).some(Boolean);
+  const anyMedia = Object.values(capture.media).some(Boolean);
+  if (!anySource || !anyMedia) {
+    el.checked = !el.checked;
+    $('captureNote').textContent = !anySource
+      ? 'Keep at least one kind of conversation, or nothing is archived at all.'
+      : 'Keep at least one message type, or nothing is archived at all.';
+    return;
+  }
+  $('captureNote').textContent = 'Saved. Applies to messages arriving from now on.';
+  paintSettings(await wa.saveSettings({ capture }));
+}
+$('captureSources').addEventListener('change', onCaptureToggle);
+$('captureMedia').addEventListener('change', onCaptureToggle);
+
+// --- connection controls ------------------------------------------------
+
+async function control(fn, note) {
+  $('ctlNote').textContent = note;
+  try {
+    paintStatus(await fn());
+  } catch (e) {
+    $('ctlNote').textContent = e.message;
+  }
+}
+$('ctlPause').onclick = () => control(() => wa.pauseCapture(), 'Capture paused. Nothing is being archived.');
+$('ctlRefresh').onclick = () => control(() => wa.refreshConnection(), 'Reconnecting…');
+$('ctlUnlink').onclick = async () => {
+  // Destructive and not obviously so from the button alone: it ends the session
+  // and forces a fresh QR scan.
+  if (!confirm('Unlink this device?\n\nThe session ends and you will need to scan a new QR code. Your archive is not deleted.')) return;
+  await control(() => wa.unlinkDevice(), 'Unlinked. Scan a new QR code to start capturing again.');
+};
 
 // --- onboarding step 4: AI provider ---------------------------------------
 // Placed after linking on purpose. Capture is the part that cannot be recovered
