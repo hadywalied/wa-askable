@@ -343,6 +343,22 @@ async function runSmokeTest(win: BrowserWindow): Promise<void> {
     const older = await window.wa.fetchOlder(10);
     out.fetchOlderDeclines = older.requested === false && typeof older.reason === 'string';
 
+    // Layout regressions are invisible to typecheck; assert the shell responds.
+    out.sidebarCollapses = (() => {
+      const before = $('shell').classList.contains('collapsed');
+      $('sbToggle').click();
+      const toggled = $('shell').classList.contains('collapsed') !== before;
+      $('sbToggle').click();
+      return toggled;
+    })();
+    out.paneUsesWidth = (() => {
+      const pane = document.querySelector('.pane[data-pane="workspace"]');
+      const max = getComputedStyle(pane).maxWidth;
+      // 640px was the bug: settings pinned to a narrow column on a wide screen.
+      return max !== '640px';
+    })();
+    out.getMessagesButton = Boolean($('ctlFetch'));
+
     out.wsButtons = ['fetchOlder', 'wsClearMedia', 'wsClearConvs', 'wsReindex', 'wsDeleteOlder', 'wsReset', 'wsCompact']
       .every((id) => Boolean($(id)));
 

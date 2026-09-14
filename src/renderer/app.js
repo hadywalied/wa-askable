@@ -43,6 +43,16 @@ document.querySelector('.nav').addEventListener('click', (e) => {
 
 $('statusPill').onclick = () => { go('settings'); openPane('connection'); };
 
+// Sidebar collapse. Remembered per machine — a layout preference is exactly the
+// kind of small per-viewer convenience localStorage is for.
+function setCollapsed(on) {
+  $('shell').classList.toggle('collapsed', on);
+  $('sbToggle').title = on ? 'Expand sidebar' : 'Collapse sidebar';
+  try { localStorage.setItem('sidebarCollapsed', on ? '1' : '0'); } catch { /* private window */ }
+}
+$('sbToggle').onclick = () => setCollapsed(!$('shell').classList.contains('collapsed'));
+try { setCollapsed(localStorage.getItem('sidebarCollapsed') === '1'); } catch { /* ignore */ }
+
 function openPane(name) {
   for (const p of document.querySelectorAll('.pane')) p.hidden = p.dataset.pane !== name;
   for (const b of $('settingsNav').children) b.classList.toggle('active', b.dataset.pane === name);
@@ -383,6 +393,24 @@ async function loadChats() {
 }
 $('showEmpty').onchange = loadChats;
 
+/**
+ * A JID is not a name. Until contacts arrive, show the best thing available:
+ * a readable phone number, or an honest label for the LID form, which carries
+ * no number at all.
+ */
+function chatLabel(c) {
+  if (c.name) return c.name;
+  const id = c.jid.split('@')[0];
+  if (c.jid.endsWith('@lid')) return 'Unknown contact';
+  if (c.jid.endsWith('@g.us')) return 'Group';
+  if (c.jid.endsWith('@newsletter')) return 'Channel';
+  const digits = id.replace(/[^0-9]/g, '');
+  if (digits.length < 8) return id;
+  // +20 122 469 8687 — grouped from the right, which works for any country code.
+  const tail = digits.slice(-10);
+  return `+${digits.slice(0, digits.length - 10)} ${tail.slice(0, 3)} ${tail.slice(3, 6)} ${tail.slice(6)}`.trim();
+}
+
 function relTime(ts) {
   if (!ts) return '';
   const d = new Date(ts);
@@ -401,7 +429,7 @@ function renderChatList() {
   $('chatList').innerHTML = rows.length
     ? rows.map((c) => `
         <div class="chat-row${c.jid === state.activeChat ? ' active' : ''}" data-jid="${c.jid}">
-          <b><span class="when">${relTime(c.lastTs || c.lastMessageAt)}</span>${escapeHtml(c.name || c.jid.split('@')[0])}</b>
+          <b><span class="when">${relTime(c.lastTs || c.lastMessageAt)}</span>${escapeHtml(chatLabel(c))}</b>
           <span class="preview">${c.preview ? escapeHtml(c.preview.slice(0, 80)) : `${fmt(c.messageCount)} messages`}</span>
         </div>`).join('')
     : `<div class="empty" style="padding:22px"><p class="tiny">${
@@ -431,7 +459,7 @@ async function openChat(jid) {
   state.activeChat = jid;
   renderChatList();
   const chat = state.chats.find((c) => c.jid === jid);
-  $('chatTitle').textContent = chat?.name || jid.split('@')[0];
+  $('chatTitle').textContent = chat ? chatLabel(chat) : jid.split('@')[0];
   const { hits } = await wa.search({ query: '', chatJid: jid, limit: 100 });
   renderMessages(hits.slice().reverse());
 }
@@ -586,20 +614,26 @@ $('wsReset').onclick = () =>
     'Delete EVERYTHING in this archive?\n\nEvery message, chat, contact and media file is removed. Your WhatsApp link is kept. This cannot be undone.',
     async () => `Archive emptied — ${fmt((await wa.resetArchive()).messages)} messages removed.`);
 
-$('fetchOlder').onclick = async () => {
-  $('fetchOlder').disabled = true;
-  $('fetchOlderOut').textContent = 'Asking your phone for older messages…';
+/**
+ * Shared by Settings -> Connection and Settings -> Workspace. One implementation
+ * so the wording cannot drift: this is a request to the phone, and a silent no
+ * is a normal outcome, not a failure.
+ */
+async function requestOlder(btn, out) {
+  btn.disabled = true;
+  out.textContent = 'Asking your phone for older messages…';
   try {
     const r = await wa.fetchOlder(50);
-    // Honest wording: this is a request, and a silent no is a normal outcome.
-    $('fetchOlderOut').textContent = r.requested
-      ? 'Requested. Anything WhatsApp sends will appear over the next few moments — if nothing arrives, your phone has no more to give.'
+    out.textContent = r.requested
+      ? 'Requested. Anything WhatsApp sends will arrive over the next few moments — if nothing appears, your phone has no more to give.'
       : r.reason || 'Could not request older messages.';
   } catch (e) {
-    $('fetchOlderOut').textContent = e.message;
+    out.textContent = e.message;
   }
-  $('fetchOlder').disabled = false;
-};
+  btn.disabled = false;
+}
+$('fetchOlder').onclick = () => requestOlder($('fetchOlder'), $('fetchOlderOut'));
+$('ctlFetch').onclick = () => requestOlder($('ctlFetch'), $('ctlNote'));
 
 $('openLogs').onclick = () => wa.openLogs();
 $('copyDiag').onclick = async () => {

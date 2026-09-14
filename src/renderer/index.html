@@ -114,23 +114,26 @@
 <!-- ========== APP SHELL ============================================ -->
 <div id="shell" class="shell" hidden>
   <aside class="sidebar">
-    <div class="brand">wa-askable</div>
+    <div class="brand">
+      <button id="sbToggle" class="sb-toggle" title="Collapse sidebar" aria-label="Collapse sidebar">☰</button>
+      <span class="brand-text">wa-askable</span>
+    </div>
 
     <nav class="nav">
-      <button data-view="ask" class="nav-item">
-        <span class="ic">✳</span><span>Ask</span>
+      <button data-view="ask" class="nav-item" title="Ask">
+        <span class="ic">✳</span><span class="label">Ask</span>
       </button>
-      <button data-view="chats" class="nav-item">
-        <span class="ic">☰</span><span>Chats</span>
+      <button data-view="chats" class="nav-item" title="Chats">
+        <span class="ic">☰</span><span class="label">Chats</span>
       </button>
-      <button data-view="settings" class="nav-item">
-        <span class="ic">⚙</span><span>Settings</span>
+      <button data-view="settings" class="nav-item" title="Settings">
+        <span class="ic">⚙</span><span class="label">Settings</span>
       </button>
     </nav>
 
     <div class="sidebar-foot">
       <button id="statusPill" class="status-pill" title="Connection status">
-        <i class="dot" id="dot"></i><span id="connText">not connected</span>
+        <i class="dot" id="dot"></i><span class="label" id="connText">not connected</span>
       </button>
       <div class="ledger-mini">
         <span><b id="sMsgs">0</b> messages</span>
@@ -240,6 +243,13 @@
           <div>
             <button id="ctlRefresh" class="ghost">Reconnect now</button>
             <p class="hint">Retries immediately instead of waiting out the backoff.</p>
+          </div>
+          <div>
+            <button id="ctlFetch" class="primary">Get messages now</button>
+            <p class="hint">
+              Asks your phone to push messages older than the oldest one here. New messages
+              already arrive on their own while you stay linked — this is for reaching backwards.
+            </p>
           </div>
           <div>
             <button id="ctlUnlink" class="ghost danger">Unlink this device</button>

@@ -1326,3 +1326,32 @@ means "and make me scan a QR again". Unlinking stays its own action in Connectio
 
 Real numbers — database bytes (including `-wal`/`-shm`), media bytes and file count, messages,
 people, saved conversations. Without them "clear media" is a guess about whether it will help.
+
+---
+
+## 25. v0.6.1 — layout on a real screen
+
+Reported as "broken in full screen", and it was: `.pane { max-width: 640px }` pinned every
+settings pane to a narrow column with the rest of a wide display empty.
+
+- **Collapsible sidebar** (`☰`), remembered in `localStorage`. Collapsed is icon-only at 62px;
+  labels are hidden rather than removed so toggling costs no layout thrash, and `title`
+  attributes keep them reachable.
+- **Panes widen to `min(1180px, 100%)`**, while prose inside is capped at `74ch`. Both halves
+  matter: a settings page pinned to 640px on a 2560px display looks broken, and one with
+  110-character lines is unreadable. Width for controls, character limits for text.
+- **Splits scale**: `clamp(240px, 20vw, 360px)` instead of a fixed 270px, and under 900px they
+  collapse to a single column with the sidebar auto-collapsed rather than crushing both panes.
+- Message bubbles cap at `min(72%, 720px)` so they stop stretching into unreadable lines.
+- Settings sub-nav is sticky.
+
+**Raw JIDs read as breakage too.** Until contacts arrive the list showed `120363429393479322`.
+`chatLabel()` now formats a phone number readably (`+20 122 469 8687`, grouped from the right so
+it works for any country code) and labels the LID form honestly as "Unknown contact" — that form
+carries no number at all.
+
+**"Get messages now"** added to Connection, sharing one implementation with the Workspace button
+so the wording cannot drift.
+
+Layout regressions are invisible to typecheck, so the smoke harness now asserts the sidebar
+toggles and that the pane max-width is no longer the 640px that caused this.
