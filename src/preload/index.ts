@@ -53,7 +53,12 @@ const api = {
   connect: (): Promise<WhatsAppStatus> => invoke(CHANNELS.whatsappConnect),
   disconnect: (): Promise<WhatsAppStatus> => invoke(CHANNELS.whatsappDisconnect),
 
-  refresh: (): Promise<RefreshResult> => invoke(CHANNELS.refreshRun),
+  refresh: (opts?: { retryFailed?: boolean }): Promise<RefreshResult> =>
+    invoke(CHANNELS.refreshRun, opts),
+  stopIndexing: (): Promise<{ ok: boolean }> => invoke(CHANNELS.indexStop),
+  onIndexProgress: (cb: (p: { done: number; total: number }) => void): void => {
+    ipcRenderer.on(EVENTS.indexProgress, (_event, payload) => cb(payload));
+  },
 
   pauseCapture: (): Promise<WhatsAppStatus> => invoke(CHANNELS.whatsappPause),
   refreshConnection: (): Promise<WhatsAppStatus> => invoke(CHANNELS.whatsappRefresh),

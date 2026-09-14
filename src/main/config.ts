@@ -1,6 +1,6 @@
 import { app } from 'electron';
 import path from 'node:path';
-import { getApiKey, getSettings } from './settings.js';
+import { getApiKey, getProviderConfig, getSettings } from './settings.js';
 import type { ProviderKind } from '../shared/providers.js';
 
 /**
@@ -25,12 +25,15 @@ export interface Config {
 export async function loadConfig(): Promise<Config> {
   const key = await getApiKey();
   const settings = getSettings();
-  const baseUrl = settings.baseUrl.trim();
+  // The encrypted workspace blob wins: it is the archive's own configuration.
+  // settings.json is the fallback for anything written before 0.5.
+  const blob = await getProviderConfig();
+  const baseUrl = (blob.baseUrl ?? settings.baseUrl).trim();
   return {
     anthropicApiKey: key,
-    model: settings.model,
-    providerId: settings.providerId,
-    providerKind: settings.providerKind,
+    model: blob.model ?? settings.model,
+    providerId: blob.providerId ?? settings.providerId,
+    providerKind: blob.providerKind ?? settings.providerKind,
     baseUrl,
     // Local-only is a real mode, not a degraded one: capture, folding, stemming
     // and keyword search all work, and nothing leaves the machine at all.

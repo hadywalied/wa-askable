@@ -8,6 +8,7 @@ import {
   createConversation,
   deleteConversation,
   listConversations,
+  contactCount,
   openDatabase,
   stats,
   type DB,
@@ -31,8 +32,11 @@ import {
   applyAutostart,
   encryptionAvailable,
   getApiKey,
+  getProviderConfig,
   getSettings,
   setApiKey,
+  setProviderConfig,
+  setSecretLocation,
   updateSettings,
 } from './settings.js';
 
@@ -105,12 +109,17 @@ async function boot(cfg: Config, root: string): Promise<Runtime> {
   }
 
   const ws = await openWorkspace(root);
+  // AI configuration lives with the archive, so it must be pointed at the new
+  // workspace before anything reads a key.
+  setSecretLocation(ws.root);
   const db = openDatabase(ws.dbPath);
   // The filter is read per message, so changing it takes effect immediately
   // rather than on the next reconnect.
   const wa = new WhatsAppArchive(db, ws.authDir, ws.mediaDir, () => getSettings().capture);
   const provider = currentProvider();
-  const enricher = new Enricher(db, provider, cfg.model);
+  const enricher = new Enricher(db, provider, cfg.model, (p) =>
+    broadcast(EVENTS.indexProgress, p),
+  );
 
   // Push, don't poll. The socket already fires on every captured message; the
   // renderer used to ask every 2.5s for something it could simply be told.
@@ -161,7 +170,9 @@ function rebuildProvider(): void {
   if (!rt) return;
   const provider = currentProvider();
   rt.provider = provider;
-  rt.enricher = new Enricher(rt.db, provider, cfg.model);
+  rt.enricher = new Enricher(rt.db, provider, cfg.model, (p) =>
+    broadcast(EVENTS.indexProgress, p),
+  );
 }
 
 async function describeSettings(message?: string): Promise<AppSettings & { message?: string }> {
@@ -207,6 +218,25 @@ export function registerIpc(initial: Config): void {
     }
     if (patch.baseUrl !== undefined) {
       updateSettings({ baseUrl: patch.baseUrl.trim() });
+    }
+    // Provider identity is stored encrypted in the workspace alongside the key.
+    if (patch.model !== undefined && patch.model.trim()) {
+      await setProviderConfig({ model: patch.model.trim() });
+    }
+    if (patch.baseUrl !== undefined) {
+      await setProviderConfig({ baseUrl: patch.baseUrl.trim() });
+    }
+    if (patch.providerKind !== undefined) {
+      await setProviderConfig({ providerKind: patch.providerKind });
+    }
+    if (patch.providerId !== undefined) {
+      const preset = presetById(patch.providerId);
+      await setProviderConfig({
+        providerId: patch.providerId,
+        ...(preset && patch.providerId !== 'custom'
+          ? { providerKind: preset.kind, baseUrl: preset.baseUrl }
+          : {}),
+      });
     }
     if (patch.capture !== undefined) {
       updateSettings({ capture: patch.capture });
@@ -276,6 +306,8 @@ export function registerIpc(initial: Config): void {
       stats: stats(rt.db),
       enrichmentEnabled: rt.enricher.enabled,
       pending: rt.enricher.pendingCount(),
+      failed: rt.enricher.failedCount(),
+      contacts: contactCount(rt.db),
     };
   });
 
@@ -332,12 +364,18 @@ export function registerIpc(initial: Config): void {
    * those messages created — transliterating Franco, writing English glosses,
    * and (later) transcribing audio.
    */
-  ipcMain.handle(CHANNELS.refreshRun, async () => {
+  ipcMain.handle(CHANNELS.refreshRun, async (_e, opts?: { retryFailed?: boolean }) => {
     const { enricher, db } = need();
+    const retried = opts?.retryFailed ? enricher.retryFailed() : 0;
     const result = await enricher.run(25);
     const s = stats(db);
     broadcast(EVENTS.stats, s);
-    return { ...result, stats: s };
+    return { ...result, retried, stats: s };
+  });
+
+  ipcMain.handle(CHANNELS.indexStop, () => {
+    need().enricher.stop();
+    return { ok: true };
   });
 
   ipcMain.handle(CHANNELS.chatsList, (_e, includeEmpty?: boolean) => ({

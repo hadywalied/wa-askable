@@ -197,6 +197,19 @@ export const TOOL_DEFINITIONS = [
     },
   },
   {
+    name: 'find_people',
+    description:
+      'Resolve a person or group from a name, partial name, @handle or phone number, and get their JID plus how many messages they have sent. Call this FIRST whenever a question names someone — searching by a guessed sender string misses Arabic spelling variants and anyone whose saved name differs from their push name. Returns groups too, so "the flat group" resolves.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        query: { type: 'string', description: 'A name, part of one, or digits of a phone number.' },
+        limit: { type: 'number', description: 'Max matches (default 15).' },
+      },
+      required: ['query'],
+    },
+  },
+  {
     name: 'read_context',
     description:
       'Read the messages surrounding a search hit. Always call this before answering — a matched message rarely means anything on its own.',
@@ -218,6 +231,8 @@ export function runTool(db: DB, name: string, input: Record<string, unknown>): u
       return listChats(db, (input.limit as number) ?? 200);
     case 'search_messages':
       return searchMessages(db, input as unknown as SearchArgs);
+    case 'find_people':
+      return findContacts(db, String(input.query ?? ''), (input.limit as number) ?? 15);
     case 'read_context':
       return readContext(
         db,
@@ -228,4 +243,78 @@ export function runTool(db: DB, name: string, input: Record<string, unknown>): u
     default:
       return { error: `unknown_tool: ${name}` };
   }
+}
+
+
+// --- people ------------------------------------------------------------------
+
+export interface ContactHit {
+  jid: string;
+  name: string | null;
+  phone: string | null;
+  isGroup: boolean;
+  messageCount: number;
+  lastMessageAt: number | null;
+}
+
+/**
+ * Resolve a person from whatever the user called them.
+ *
+ * Questions name people, not JIDs — "what did Ahmed say", "the number ending
+ * 4698", "@someone". Without this the agent has to guess a sender string and
+ * hope LIKE matches it, which fails on Arabic spelling variants and on anyone
+ * whose saved name differs from their push name.
+ *
+ * Matches on every stored name (address book, push, business) and on the phone
+ * number, and returns how much traffic each match has so the agent can pick the
+ * likely one rather than the first.
+ */
+export function findContacts(db: DB, query: string, limit = 15): ContactHit[] {
+  const raw = query.trim();
+  if (!raw) return [];
+  const digits = raw.replace(/[^0-9]/g, '');
+  const folded = foldForSearch(raw).replace(/"/g, '').trim();
+
+  const terms = folded.split(/\s+/).filter(Boolean).map((t) => `"${t}"*`).join(' AND ');
+
+  const rows = db
+    .prepare(
+      `SELECT c.jid, c.name, c.notify, c.verified_name AS verifiedName, c.phone,
+              (SELECT COUNT(*) FROM messages m WHERE m.sender_jid = c.jid) AS messageCount,
+              (SELECT MAX(ts) FROM messages m2 WHERE m2.sender_jid = c.jid) AS lastMessageAt
+         FROM contacts c
+        WHERE (@terms <> '' AND c.jid IN (SELECT jid FROM contacts_fts WHERE contacts_fts MATCH @terms))
+           OR (@digits <> '' AND c.phone LIKE '%' || @digits)
+        ORDER BY messageCount DESC
+        LIMIT @limit`,
+    )
+    .all({ terms, digits: digits.length >= 4 ? digits : '', limit }) as (ContactHit & {
+    notify: string | null;
+    verifiedName: string | null;
+  })[];
+
+  const out: ContactHit[] = rows.map((r) => ({
+    jid: r.jid,
+    name: r.name || r.verifiedName || r.notify || null,
+    phone: r.phone,
+    isGroup: false,
+    messageCount: r.messageCount,
+    lastMessageAt: r.lastMessageAt,
+  }));
+
+  // Groups are addressed by name too ("the flat group"), and live in chats.
+  const groups = db
+    .prepare(
+      `SELECT c.jid, c.name, c.last_message_at AS lastMessageAt,
+              (SELECT COUNT(*) FROM messages m WHERE m.chat_jid = c.jid) AS messageCount
+         FROM chats c
+        WHERE c.is_group = 1 AND c.name IS NOT NULL AND LOWER(c.name) LIKE '%' || LOWER(@q) || '%'
+        ORDER BY messageCount DESC LIMIT @limit`,
+    )
+    .all({ q: raw, limit }) as { jid: string; name: string; messageCount: number; lastMessageAt: number }[];
+
+  for (const g of groups) {
+    out.push({ jid: g.jid, name: g.name, phone: null, isGroup: true, messageCount: g.messageCount, lastMessageAt: g.lastMessageAt });
+  }
+  return out.slice(0, limit);
 }

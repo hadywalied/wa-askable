@@ -295,10 +295,14 @@
         </div>
         <div class="stat-row">
           <div><b id="iPending">0</b><span>waiting</span></div>
+          <div><b id="iFailed">0</b><span>failed</span></div>
           <div><b id="iMsgs">0</b><span>indexed</span></div>
+          <div><b id="iContacts">0</b><span>people known</span></div>
         </div>
         <div class="ob-actions left">
           <button id="refresh" class="primary">Refresh index</button>
+          <button id="retryFailed" class="ghost">Retry failed</button>
+          <button id="stopIndex" class="ghost" hidden>Stop</button>
         </div>
         <p class="hint" id="refreshOut"></p>
       </div>

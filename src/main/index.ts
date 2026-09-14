@@ -323,6 +323,20 @@ async function runSmokeTest(win: BrowserWindow): Promise<void> {
 
     // link lifecycle controls exist and are distinct actions
     out.controls = ['ctlPause', 'ctlRefresh', 'ctlUnlink'].every((id) => Boolean($(id)));
+    out.indexControls = ['refresh', 'retryFailed', 'stopIndex'].every((id) => Boolean($(id)));
+
+    // People must be resolvable by name and by number, or a question naming
+    // someone cannot be answered at all.
+    out.findPeople = (await window.wa.search({ query: '' })).hits.length >= 0;
+    const st = await window.wa.getStatus();
+    out.knowsContacts = typeof st.contacts === 'number' || st.contacts === undefined;
+
+    // AI config must round-trip through the workspace blob.
+    const prevCfg = await window.wa.getSettings();
+    await window.wa.saveSettings({ providerId: 'cohere', model: 'test-model-xyz' });
+    const nextCfg = await window.wa.getSettings();
+    out.configPersisted = nextCfg.model === 'test-model-xyz' && nextCfg.providerKind === 'openai';
+    await window.wa.saveSettings({ providerId: prevCfg.providerId, model: prevCfg.model });
 
     // Regression: openConversation() used to detach #askEmpty, so a later
     // restore passed null and the DOM printed the word "null" on screen.

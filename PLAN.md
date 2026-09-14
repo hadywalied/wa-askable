@@ -1229,3 +1229,59 @@ the old shape silently. `migrate()` checks `PRAGMA table_info` and adds the colu
 - **The chat list showed 1,044 rows against 867 messages.** Empty chats are hidden by default
   (with a toggle), rows carry a preview and relative timestamp, and the count line says how many
   are hidden.
+
+---
+
+## 23. v0.5.0 — people, capture completeness, indexing, and config that travels
+
+### 23.1 Contacts: the archive was a pile of phone numbers
+
+Questions name people — "what did Ahmed say", "the number ending 4698" — but nothing stored a
+name. `sender_name` held whatever `pushName` happened to be attached to a message, which is the
+*sender's own* label, missing for anyone quiet, and wrong for groups.
+
+New `contacts` table plus a `contacts_fts` index over every name form. Names arrive from four
+places, none complete alone: `contacts.upsert`/`contacts.update`, the address book inside
+`messaging-history.set`, group participant lists, and message `pushName`. They are merged with
+`COALESCE` so a weaker source never overwrites a stronger one — an address-book name must survive
+a later pushName.
+
+`find_people` is a fourth agent tool, and the prompt now requires calling it first whenever a
+question names someone: a guessed sender string quietly returns nothing and looks like an empty
+archive. It matches any name form or phone digits, returns the JID and message count so the agent
+can pick the likely match, and resolves group names too.
+
+**Group naming bug found on the way:** `upsertChat` was writing `msg.pushName` as the chat name,
+so a group got renamed after whoever spoke last. Groups now take their subject from
+`chats.upsert`/`groups.upsert` only.
+
+### 23.2 Capture completeness
+
+- `chats.upsert` / `chats.update` — real chat names and renames, instead of inferring from
+  whoever last spoke.
+- `groups.upsert` — group subjects and participant lists.
+- `messages.update` — edits are applied and re-queued for enrichment. Without this the archive
+  slowly diverges from what the other person actually sees.
+- `messaging-history.set` reports **progress**: it arrives in chunks with a percentage, and
+  showing it is the difference between "importing, 40%" and an app that looks frozen.
+
+### 23.3 Indexing
+
+- **Failed rows are retryable.** A batch fails for transient reasons far more often than
+  permanent ones; marking them `failed` forever meant one bad minute silently cost those messages
+  their translation, with no way to ask again.
+- **Sender-name backfill**, run before any model call — cheap, local, and it fixes search
+  immediately. The history blob arrives in chunks and the address book often lands *after* the
+  messages, so early rows keep a bare JID and searching by name misses precisely the oldest
+  messages.
+- **Progress per batch** and a **Stop** button; a long pass was previously a frozen button.
+
+### 23.4 AI configuration lives in the workspace, encrypted
+
+`ai-config.bin` in the workspace, encrypted with the OS keystore, holding provider id, protocol,
+base URL, model and key. The workspace already holds everything else — database, media, session
+keys — so the provider that reads those messages belongs with them: move the archive and its
+configuration follows; point the app at a different archive and you are not silently still talking
+to the previous one's provider.
+
+The pre-0.5 `userData/secret.bin` (bare key) is read as a fallback and migrated on first write.

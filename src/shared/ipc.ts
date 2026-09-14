@@ -31,12 +31,14 @@ export const CHANNELS = {
   whatsappPause: 'whatsapp:pause',
   whatsappRefresh: 'whatsapp:refresh',
   whatsappUnlink: 'whatsapp:unlink',
+  indexStop: 'index:stop',
 } as const;
 
 /** Pushed from main; the renderer no longer polls. */
 export const EVENTS = {
   status: 'wa:status',
   stats: 'wa:stats',
+  indexProgress: 'wa:index-progress',
 } as const;
 
 export interface WorkspaceWarning {

@@ -21,7 +21,7 @@ import {
 import pino from 'pino';
 import { toDataURL } from 'qrcode';
 import type { DB, MessageKind } from './db.js';
-import { insertMessage, rememberMedia, upsertChat } from './db.js';
+import { insertMessage, rememberMedia, upsertChat, upsertContact, displayName, contactFor } from './db.js';
 import { foldForSearch, stemsForSearch } from './normalize.js';
 import { DEFAULT_CAPTURE, shouldCapture, type CaptureFilter } from '../shared/capture.js';
 
@@ -55,6 +55,9 @@ export interface WhatsAppStatus {
   lastError?: string;
   /** Which attempt we are on, so the UI can say "retrying (3)". */
   attempt?: number;
+  /** 0-100 while WhatsApp is pushing history, null when not syncing. */
+  historyProgress?: number | null;
+  historyComplete?: boolean;
   capturedThisSession: number;
 }
 
@@ -157,6 +160,7 @@ export class WhatsAppArchive extends EventEmitter {
   private watchdog: NodeJS.Timeout | null = null;
   private captureFlush: NodeJS.Timeout | null = null;
   private lastQr: string | null = null;
+  private historyProgress: number | null = null;
 
   constructor(
     private readonly db: DB,
@@ -410,14 +414,83 @@ export class WhatsAppArchive extends EventEmitter {
       }
     });
 
+    // --- people -------------------------------------------------------
+    // Names arrive from several places, none of them complete on their own.
+    // Without them the archive is a pile of phone numbers and a question like
+    // "what did Ahmed say" cannot even begin.
+    const ingestContacts = (list: unknown[] | undefined, source: string): void => {
+      let n = 0;
+      for (const raw of list ?? []) {
+        const c = raw as { id?: string; name?: string; notify?: string; verifiedName?: string; lid?: string };
+        if (!c?.id) continue;
+        upsertContact(this.db, {
+          jid: c.id,
+          name: c.name ?? null,
+          notify: c.notify ?? null,
+          verifiedName: c.verifiedName ?? null,
+          lid: c.lid ?? null,
+        });
+        n++;
+      }
+      if (n) this.emit('log', `${source}: ${n} contacts`);
+    };
+
+    // There is no 'contacts.set': the initial address book rides along with
+    // messaging-history.set, and these two carry everything afterwards.
+    sock.ev.on('contacts.upsert', (contacts) => ingestContacts(contacts, 'contacts.upsert'));
+    sock.ev.on('contacts.update', (updates) => ingestContacts(updates, 'contacts.update'));
+
+    // Chat names (group subjects, renames) come through their own events.
+    const ingestChats = (list: unknown[] | undefined): void => {
+      for (const raw of list ?? []) {
+        const c = raw as { id?: string; name?: string | null; subject?: string | null; conversationTimestamp?: number };
+        if (!c?.id) continue;
+        const name = c.name ?? c.subject ?? null;
+        if (!name) continue;
+        upsertChat(this.db, {
+          jid: c.id,
+          name,
+          isGroup: isJidGroup(c.id) ?? false,
+          ts: Number(c.conversationTimestamp ?? 0) * 1000 || Date.now(),
+        });
+      }
+    };
+    sock.ev.on('chats.upsert', ingestChats);
+    sock.ev.on('chats.update', ingestChats);
+
+    // Group participants are people too, and a group's member list is often the
+    // only place a name appears for someone who has never messaged directly.
+    sock.ev.on('groups.upsert', (groups) => {
+      for (const g of groups ?? []) {
+        upsertChat(this.db, { jid: g.id, name: g.subject ?? null, isGroup: true, ts: Date.now() });
+        ingestContacts(
+          (g.participants ?? []).map((pt) => ({ id: pt.id })),
+          'group participants',
+        );
+      }
+    });
+
     // Live traffic.
     sock.ev.on('messages.upsert', async ({ messages, type }) => {
       if (type !== 'notify' && type !== 'append') return;
       for (const msg of messages) await this.capture(msg);
     });
 
-    // The one-time history blob pushed shortly after linking.
-    sock.ev.on('messaging-history.set', async ({ messages, chats }) => {
+    // The history blob pushed after linking. It arrives in several chunks with
+    // a progress percentage, not as one payload — reporting it is the
+    // difference between "importing, 40%" and an app that looks frozen.
+    sock.ev.on('messaging-history.set', async (payload) => {
+      const { messages, chats, contacts, progress, syncType, isLatest } = payload as {
+        messages?: WAMessage[];
+        chats?: { id: string; name?: string | null; conversationTimestamp?: number }[];
+        contacts?: unknown[];
+        progress?: number | null;
+        syncType?: number;
+        isLatest?: boolean;
+      };
+
+      ingestContacts(contacts, 'history contacts');
+
       for (const c of chats ?? []) {
         upsertChat(this.db, {
           jid: c.id,
@@ -427,7 +500,45 @@ export class WhatsAppArchive extends EventEmitter {
         });
       }
       for (const msg of messages ?? []) await this.capture(msg);
-      this.emit('history-synced', { messages: messages?.length ?? 0 });
+
+      this.historyProgress = typeof progress === 'number' ? progress : this.historyProgress;
+      this.setStatus({
+        historyProgress: this.historyProgress,
+        historyComplete: Boolean(isLatest),
+      });
+      this.emit('history-synced', {
+        messages: messages?.length ?? 0,
+        chats: chats?.length ?? 0,
+        contacts: (contacts ?? []).length,
+        progress: this.historyProgress,
+        syncType,
+        isLatest: Boolean(isLatest),
+      });
+      this.emit(
+        'log',
+        `history chunk: ${messages?.length ?? 0} messages, ${chats?.length ?? 0} chats, ` +
+          `${(contacts ?? []).length} contacts, progress=${this.historyProgress ?? '?'}%`,
+      );
+    });
+
+    // Edits and deletions. Without this the archive slowly diverges from what
+    // the other person can actually see on their phone.
+    sock.ev.on('messages.update', (updates) => {
+      for (const u of updates) {
+        const jid = u.key?.remoteJid;
+        if (!jid || !u.key?.id) continue;
+        const id = `${jid}:${u.key.id}`;
+        const edited =
+          u.update?.message?.editedMessage?.message?.protocolMessage?.editedMessage?.conversation;
+        if (typeof edited === 'string' && edited) {
+          this.db
+            .prepare(
+              "UPDATE messages SET body_raw = ?, body_ar = ?, body_stem = ?, enrich_state = 'pending' WHERE id = ?",
+            )
+            .run(edited, foldForSearch(edited), stemsForSearch(edited), id);
+          this.emit('log', `message edited: ${id}`);
+        }
+      }
     });
   }
 
@@ -568,7 +679,18 @@ export class WhatsAppArchive extends EventEmitter {
     const ts = timestampMs(msg);
     const isGroup = isJidGroup(jid) ?? false;
 
-    upsertChat(this.db, { jid, name: msg.pushName ?? null, isGroup, ts });
+    const senderJid = msg.key.participant ? jidNormalizedUser(msg.key.participant) : jid;
+    if (!msg.key.fromMe && msg.pushName) {
+      upsertContact(this.db, { jid: senderJid, notify: msg.pushName });
+    }
+    // A group's name is its subject, never a participant's pushName — writing
+    // pushName onto a group renames the chat after whoever spoke last.
+    upsertChat(this.db, {
+      jid,
+      name: isGroup ? null : displayName(contactFor(this.db, jid) ?? {}) ?? msg.pushName ?? null,
+      isGroup,
+      ts,
+    });
 
     const kind = messageKind(msg);
 
@@ -596,8 +718,8 @@ export class WhatsAppArchive extends EventEmitter {
     insertMessage(this.db, {
       id,
       chat_jid: jid,
-      sender_jid: msg.key.participant ? jidNormalizedUser(msg.key.participant) : jid,
-      sender_name: msg.pushName ?? null,
+      sender_jid: senderJid,
+      sender_name: displayName(contactFor(this.db, senderJid) ?? {}) ?? msg.pushName ?? null,
       ts,
       from_me: msg.key.fromMe ? 1 : 0,
       kind,

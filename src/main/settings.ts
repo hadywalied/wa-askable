@@ -143,7 +143,32 @@ function applyLinuxAutostart(enabled: boolean): boolean {
  * one throughout: isAsyncEncryptionAvailable / encryptStringAsync /
  * decryptStringAsync (which resolves to { result }).
  */
-const secretFile = (): string => path.join(app.getPath('userData'), 'secret.bin');
+/**
+ * Where the AI configuration lives.
+ *
+ * In the WORKSPACE, not app settings, and encrypted. The workspace is already
+ * the one directory holding everything — database, media, session keys — so the
+ * provider that reads those messages belongs with them: move the workspace to
+ * another machine and its configuration comes along; point the app at a
+ * different archive and you are not silently still talking to the last one's
+ * provider.
+ *
+ * Falls back to userData when no workspace is open, so the key survives being
+ * set before an archive exists.
+ */
+let workspaceDir: string | null = null;
+
+export function setSecretLocation(dir: string | null): void {
+  if (workspaceDir === dir) return;
+  workspaceDir = dir;
+  cachedProvider = null;
+}
+
+const secretFile = (): string =>
+  path.join(workspaceDir ?? app.getPath('userData'), 'ai-config.bin');
+
+/** Pre-workspace location, migrated on first open. */
+const legacySecretFile = (): string => path.join(app.getPath('userData'), 'secret.bin');
 
 /**
  * Session-only fallback. If the OS has no keystore available — a Linux box with
@@ -152,6 +177,58 @@ const secretFile = (): string => path.join(app.getPath('userData'), 'secret.bin'
  * finds out now instead of discovering it after a restart.
  */
 let memoryKey: string | undefined;
+/** Provider settings decrypted from the workspace blob. */
+let cachedProvider: ProviderConfigBlob | null = null;
+
+export interface ProviderConfigBlob {
+  apiKey?: string;
+  providerId?: string;
+  providerKind?: ProviderKind;
+  baseUrl?: string;
+  model?: string;
+}
+
+async function readBlob(): Promise<ProviderConfigBlob> {
+  if (cachedProvider) return cachedProvider;
+  for (const file of [secretFile(), legacySecretFile()]) {
+    try {
+      if (!existsSync(file)) continue;
+      if (!(await encryptionAvailable())) continue;
+      const { result } = await safeStorage.decryptStringAsync(readFileSync(file));
+      const parsed = JSON.parse(result) as ProviderConfigBlob | string;
+      // The pre-0.5 file held the bare key rather than a config object.
+      cachedProvider = typeof parsed === 'string' ? { apiKey: parsed } : parsed;
+      return cachedProvider;
+    } catch {
+      // A blob encrypted under another OS user cannot be read back. Behaving as
+      // unconfigured is better than refusing to start.
+    }
+  }
+  cachedProvider = {};
+  return cachedProvider;
+}
+
+async function writeBlob(patch: ProviderConfigBlob): Promise<boolean> {
+  const next = { ...(await readBlob()), ...patch };
+  cachedProvider = next;
+  if (!(await encryptionAvailable())) return false;
+  try {
+    const blob = await safeStorage.encryptStringAsync(JSON.stringify(next));
+    writeFileSync(secretFile(), blob, { mode: 0o600 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Provider settings stored with the archive, if any. */
+export async function getProviderConfig(): Promise<ProviderConfigBlob> {
+  return readBlob();
+}
+
+export async function setProviderConfig(patch: ProviderConfigBlob): Promise<boolean> {
+  return writeBlob(patch);
+}
 
 export async function encryptionAvailable(): Promise<boolean> {
   try {
@@ -166,16 +243,7 @@ export async function getApiKey(): Promise<string | undefined> {
   // An env var still wins, so a dev shell keeps working exactly as before.
   const fromEnv = process.env.ANTHROPIC_API_KEY?.trim();
   if (fromEnv) return fromEnv;
-  try {
-    if (!existsSync(secretFile())) return undefined;
-    if (!(await encryptionAvailable())) return undefined;
-    const { result } = await safeStorage.decryptStringAsync(readFileSync(secretFile()));
-    return result.trim() || undefined;
-  } catch {
-    // A key encrypted under a different OS user or a rotated keystore cannot be
-    // read back. Better to behave as local-only than to crash on startup.
-    return undefined;
-  }
+  return (await readBlob()).apiKey?.trim() || undefined;
 }
 
 export interface KeySaveResult {
@@ -188,8 +256,10 @@ export interface KeySaveResult {
 export async function setApiKey(key: string | null): Promise<KeySaveResult> {
   if (key === null || key.trim() === '') {
     memoryKey = undefined;
+    await writeBlob({ apiKey: undefined });
     try {
-      if (existsSync(secretFile())) rmSync(secretFile());
+      // Clear the pre-0.5 file too, or it would be picked up again on restart.
+      if (existsSync(legacySecretFile())) rmSync(legacySecretFile());
     } catch {
       /* non-fatal */
     }
@@ -208,17 +278,14 @@ export async function setApiKey(key: string | null): Promise<KeySaveResult> {
         'forgotten when you quit. It was not written to disk in plaintext.',
     };
   }
-  try {
-    const blob = await safeStorage.encryptStringAsync(trimmed);
-    writeFileSync(secretFile(), blob, { mode: 0o600 });
-    return { ok: true, persisted: true };
-  } catch (err) {
-    return {
-      ok: true,
-      persisted: false,
-      message: `Key kept for this session only — could not write it securely: ${String(err)}`,
-    };
-  }
+  const ok = await writeBlob({ apiKey: trimmed });
+  return ok
+    ? { ok: true, persisted: true }
+    : {
+        ok: true,
+        persisted: false,
+        message: 'Key kept for this session only — it could not be written securely.',
+      };
 }
 
 export async function hasApiKey(): Promise<boolean> {

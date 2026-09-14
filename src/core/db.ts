@@ -106,6 +106,38 @@ CREATE TRIGGER IF NOT EXISTS messages_au AFTER UPDATE ON messages BEGIN
   VALUES (new.rowid, new.body_ar, new.body_en, new.body_stem, new.sender_name);
 END;
 
+/*
+ * People.
+ *
+ * A JID is not an identity a human recognises. Questions are asked with names
+ * and numbers — "what did Ahmed say", "the guy ending 4698" — so the names have
+ * to be stored, searchable, and resolvable back to a JID before a search can
+ * even start. WhatsApp supplies them from several places of differing quality,
+ * hence the separate columns rather than one overwritten name column.
+ */
+CREATE TABLE IF NOT EXISTS contacts (
+  jid           TEXT PRIMARY KEY,
+  /* Name from the user's own address book — the most trustworthy. */
+  name          TEXT,
+  /* The push name a person set for themselves. */
+  notify        TEXT,
+  /* Business-verified name, when there is one. */
+  verified_name TEXT,
+  /* Digits from the JID, i.e. the phone number. */
+  phone         TEXT,
+  /* Linked-ID alias WhatsApp increasingly uses in groups. */
+  lid           TEXT,
+  is_me         INTEGER NOT NULL DEFAULT 0,
+  updated_at    INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_contacts_phone ON contacts(phone);
+
+/* Searching people by any of their names, including transliterated Arabic. */
+CREATE VIRTUAL TABLE IF NOT EXISTS contacts_fts USING fts5(
+  jid UNINDEXED, names, phone,
+  tokenize = 'unicode61 remove_diacritics 2'
+);
+
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 
 /*
@@ -329,4 +361,89 @@ export function appendTurn(
 export function deleteConversation(db: DB, id: string): void {
   db.prepare('DELETE FROM conversation_turns WHERE conversation_id = ?').run(id);
   db.prepare('DELETE FROM conversations WHERE id = ?').run(id);
+}
+
+
+// --- contacts ----------------------------------------------------------------
+
+export interface ContactRow {
+  jid: string;
+  name: string | null;
+  notify: string | null;
+  verifiedName: string | null;
+  phone: string | null;
+  lid: string | null;
+  isMe: 0 | 1;
+}
+
+/** Digits of a JID are the phone number; LID-form JIDs have no usable number. */
+export function phoneOf(jid: string): string | null {
+  if (!jid || jid.includes('@lid')) return null;
+  const digits = jid.split('@')[0]?.split(':')[0]?.replace(/[^0-9]/g, '') ?? '';
+  return digits.length >= 6 ? digits : null;
+}
+
+/** The name a person should be shown as, best source first. */
+export function displayName(c: Partial<ContactRow>): string | null {
+  return c.name || c.verifiedName || c.notify || null;
+}
+
+/**
+ * Upsert a contact without letting a weaker source overwrite a stronger one:
+ * an address-book name must survive a later pushName update.
+ */
+export function upsertContact(
+  db: DB,
+  c: { jid: string; name?: string | null; notify?: string | null; verifiedName?: string | null; lid?: string | null; isMe?: boolean },
+): void {
+  const jid = c.jid;
+  if (!jid) return;
+  db.prepare(
+    `INSERT INTO contacts (jid, name, notify, verified_name, phone, lid, is_me, updated_at)
+     VALUES (@jid, @name, @notify, @verifiedName, @phone, @lid, @isMe, @now)
+     ON CONFLICT(jid) DO UPDATE SET
+       name          = COALESCE(excluded.name, contacts.name),
+       notify        = COALESCE(excluded.notify, contacts.notify),
+       verified_name = COALESCE(excluded.verified_name, contacts.verified_name),
+       lid           = COALESCE(excluded.lid, contacts.lid),
+       is_me         = MAX(contacts.is_me, excluded.is_me),
+       updated_at    = excluded.updated_at`,
+  ).run({
+    jid,
+    name: c.name?.trim() || null,
+    notify: c.notify?.trim() || null,
+    verifiedName: c.verifiedName?.trim() || null,
+    phone: phoneOf(jid),
+    lid: c.lid ?? null,
+    isMe: c.isMe ? 1 : 0,
+    now: Date.now(),
+  });
+  reindexContact(db, jid);
+}
+
+function reindexContact(db: DB, jid: string): void {
+  const row = db
+    .prepare('SELECT jid, name, notify, verified_name AS verifiedName, phone FROM contacts WHERE jid = ?')
+    .get(jid) as (ContactRow & { verifiedName: string | null }) | undefined;
+  if (!row) return;
+  const names = [row.name, row.notify, row.verifiedName].filter(Boolean).join(' ');
+  db.prepare('DELETE FROM contacts_fts WHERE jid = ?').run(jid);
+  db.prepare('INSERT INTO contacts_fts (jid, names, phone) VALUES (?, ?, ?)').run(
+    jid,
+    names,
+    row.phone ?? '',
+  );
+}
+
+export function contactFor(db: DB, jid: string): ContactRow | undefined {
+  return db
+    .prepare(
+      `SELECT jid, name, notify, verified_name AS verifiedName, phone, lid, is_me AS isMe
+         FROM contacts WHERE jid = ?`,
+    )
+    .get(jid) as ContactRow | undefined;
+}
+
+export function contactCount(db: DB): number {
+  return (db.prepare('SELECT COUNT(*) AS n FROM contacts').get() as { n: number }).n;
 }

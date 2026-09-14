@@ -89,9 +89,10 @@ function paintSyncBar(c) {
   }
   const active = c.state === 'open' && n > 0 && Date.now() - lastCaptureAt < 8000;
   $('syncBar').hidden = !(active || (c.state === 'open' && n > 0 && Date.now() - lastCaptureAt < 30000));
+  const pct = typeof c.historyProgress === 'number' ? ` · history ${Math.round(c.historyProgress)}%` : '';
   $('syncText').textContent = active
-    ? `Importing… ${fmt(n)} messages captured this session`
-    : `${fmt(n)} messages captured this session · up to date`;
+    ? `Importing…${pct} · ${fmt(n)} messages captured this session`
+    : `${fmt(n)} messages captured this session · ${c.historyComplete ? 'history complete' : 'up to date'}`;
   $('syncBar').querySelector('.syncdot').style.animationPlayState = active ? 'running' : 'paused';
 }
 
@@ -106,6 +107,8 @@ function paintStats(s) {
   $('sMsgs').textContent = fmt(s.messages);
   $('sPending').textContent = fmt(s.pending);
   $('iPending').textContent = fmt(s.pending);
+  if (s.failed !== undefined) $('iFailed').textContent = fmt(s.failed);
+  if (s.contacts !== undefined) $('iContacts').textContent = fmt(s.contacts);
   $('iMsgs').textContent = fmt(s.messages);
   $('ledger').hidden = false;
   $('lChats').textContent = fmt(s.chats);
@@ -482,16 +485,37 @@ $('browseWs').onclick = async () => {
 };
 $('openWs').onclick = () => void openWorkspace($('wsPath').value.trim(), $('wsWarnings'));
 
-$('refresh').onclick = async () => {
+async function runIndex(opts) {
   $('refresh').disabled = true;
+  $('retryFailed').disabled = true;
+  $('stopIndex').hidden = false;
   $('refreshOut').textContent = 'Working through the backlog…';
   try {
-    const r = await wa.refresh();
+    const r = await wa.refresh(opts);
     paintStats(r.stats);
-    $('refreshOut').textContent = `${r.processed} glossed, ${r.skipped} needed no model call.`;
-  } catch (e) { $('refreshOut').textContent = e.message; }
+    const bits = [];
+    if (r.retried) bits.push(`${fmt(r.retried)} failed rows requeued`);
+    if (r.backfilled) bits.push(`${fmt(r.backfilled)} sender names filled in`);
+    bits.push(`${fmt(r.processed)} glossed`);
+    bits.push(`${fmt(r.skipped)} needed no model call`);
+    if (r.failed) bits.push(`${fmt(r.failed)} still failing`);
+    if (r.cancelled) bits.push('stopped early');
+    $('refreshOut').textContent = bits.join(' · ') + '.';
+  } catch (e) {
+    $('refreshOut').textContent = e.message;
+  }
   $('refresh').disabled = false;
-};
+  $('retryFailed').disabled = false;
+  $('stopIndex').hidden = true;
+}
+$('refresh').onclick = () => runIndex();
+$('retryFailed').onclick = () => runIndex({ retryFailed: true });
+$('stopIndex').onclick = () => wa.stopIndexing();
+
+// A long pass is otherwise a frozen button; report each batch.
+wa.onIndexProgress((p) => {
+  $('refreshOut').textContent = `Indexing… ${fmt(p.done)} of ${fmt(p.total)}`;
+});
 
 $('openLogs').onclick = () => wa.openLogs();
 $('copyDiag').onclick = async () => {

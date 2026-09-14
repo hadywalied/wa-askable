@@ -1,4 +1,5 @@
 import type { DB } from './db.js';
+import { contactFor, displayName } from './db.js';
 import type { ChatMessage, ChatProvider, ToolSpec } from './provider.js';
 import { classifyScript, foldForSearch, normalizeArabic, stemsForSearch } from './normalize.js';
 import { TOOL_DEFINITIONS, runTool } from './search.js';
@@ -42,11 +43,14 @@ interface GlossResult {
 
 export class Enricher {
   private running = false;
+  private cancelled = false;
 
   constructor(
     private readonly db: DB,
     private readonly provider: ChatProvider | null,
     private readonly model: string,
+    /** Called after each batch so a long pass can show progress. */
+    private readonly onBatch?: (p: { done: number; total: number }) => void,
   ) {}
 
   get enabled(): boolean {
@@ -61,24 +65,90 @@ export class Enricher {
     ).n;
   }
 
+  failedCount(): number {
+    return (
+      this.db
+        .prepare("SELECT COUNT(*) AS n FROM messages WHERE enrich_state = 'failed'")
+        .get() as { n: number }
+    ).n;
+  }
+
+  /**
+   * Put failed rows back in the queue.
+   *
+   * A batch fails for transient reasons far more often than permanent ones — a
+   * rate limit, a dropped connection, one malformed response. Marking them
+   * 'failed' forever meant a single bad minute silently cost those messages
+   * their translation, with no way to ask for it again.
+   */
+  retryFailed(): number {
+    const r = this.db
+      .prepare("UPDATE messages SET enrich_state = 'pending' WHERE enrich_state = 'failed'")
+      .run();
+    return r.changes;
+  }
+
+  /**
+   * Fill in sender names on messages captured before their contact was known.
+   *
+   * The history blob arrives in chunks and the address book often lands after
+   * the messages do, so early rows keep a bare JID. They are already indexed by
+   * then, so searching someone by name misses precisely the oldest messages —
+   * the ones hardest to find any other way.
+   */
+  backfillSenderNames(limit = 5000): number {
+    const rows = this.db
+      .prepare(
+        `SELECT DISTINCT sender_jid FROM messages
+          WHERE sender_jid IS NOT NULL AND (sender_name IS NULL OR sender_name = '')
+          LIMIT ?`,
+      )
+      .all(limit) as { sender_jid: string }[];
+
+    const update = this.db.prepare(
+      'UPDATE messages SET sender_name = ? WHERE sender_jid = ? AND (sender_name IS NULL OR sender_name = \'\')',
+    );
+    let fixed = 0;
+    const run = this.db.transaction((list: { sender_jid: string }[]) => {
+      for (const r of list) {
+        const name = displayName(contactFor(this.db, r.sender_jid) ?? {});
+        if (!name) continue;
+        fixed += update.run(name, r.sender_jid).changes;
+      }
+    });
+    run(rows);
+    return fixed;
+  }
+
   /**
    * Work through the pending queue in batches.
    *
    * This is what the "Refresh" button actually does. It does not fetch messages
    * — the socket already pushed those. It processes the backlog they created.
    */
+  /** Ask a running pass to stop after the current batch. */
+  stop(): void {
+    this.cancelled = true;
+  }
+
   async run(
     batchSize = 25,
     onProgress?: (done: number, total: number) => void,
-  ): Promise<{ processed: number; skipped: number }> {
-    if (this.running) return { processed: 0, skipped: 0 };
+  ): Promise<{ processed: number; skipped: number; failed: number; backfilled: number; cancelled: boolean }> {
+    if (this.running) return { processed: 0, skipped: 0, failed: 0, backfilled: 0, cancelled: false };
     this.running = true;
+    this.cancelled = false;
     let processed = 0;
     let skipped = 0;
+
+    // Cheap, local, and it improves search immediately — do it before spending
+    // anything on the model.
+    const backfilled = this.backfillSenderNames();
 
     try {
       const total = this.pendingCount();
       for (;;) {
+        if (this.cancelled) break;
         const batch = this.db
           .prepare(
             `SELECT id, body_raw FROM messages
@@ -119,12 +189,19 @@ export class Enricher {
           }
         }
         onProgress?.(processed + skipped, total);
+        this.onBatch?.({ done: processed + skipped, total });
         if (!this.provider) break;
       }
     } finally {
       this.running = false;
     }
-    return { processed, skipped };
+    return {
+      processed,
+      skipped,
+      failed: this.failedCount(),
+      backfilled,
+      cancelled: this.cancelled,
+    };
   }
 
   private async glossBatch(batch: { id: string; body_raw: string }[]): Promise<void> {
@@ -165,6 +242,10 @@ export class Enricher {
 const AGENT_SYSTEM = `You answer questions about the user's own WhatsApp archive.
 
 How to search well:
+- When a question names a person or a group, call find_people FIRST and search
+  with the JID it returns. Names in this archive come from three different
+  sources and rarely match what the user typed; a guessed sender string quietly
+  returns nothing and looks like an empty archive.
 - Most questions carry filters, not just keywords. "What did Mirko say about the
   deploy last month" is a sender filter, a date filter, and only then a search.
   Apply the filters first — they are exact and cut the corpus enormously.
