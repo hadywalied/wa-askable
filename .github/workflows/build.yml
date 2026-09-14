@@ -51,13 +51,12 @@ jobs:
           npx electron-builder --${{ matrix.platform }} --publish never
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Signing runs only when the secrets exist, so forks and unsigned local
-          # builds still produce working (if unsigned) artifacts.
-          CSC_LINK: ${{ secrets.CSC_LINK }}
-          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          # Signing secrets are deliberately NOT passed while none exist. An
+          # empty CSC_LINK is still "defined", and electron-builder then tries to
+          # read it as a certificate path and dies with "<cwd> not a file".
+          # Add them back here alongside removing `identity: null` from
+          # electron-builder.yml once there is a certificate.
+          CSC_IDENTITY_AUTO_DISCOVERY: false
 
       - uses: actions/upload-artifact@v4
         with:

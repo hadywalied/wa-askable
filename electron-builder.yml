@@ -64,9 +64,14 @@ mac:
       arch: [x64, arm64]
   category: public.app-category.productivity
   icon: build/icon.png
-  # Hardened runtime is required for notarization. Signing is configured in CI
-  # only when the certificate secrets are present — see .github/workflows.
-  hardenedRuntime: true
+  # No Apple Developer certificate exists yet, so builds are deliberately
+  # unsigned: `identity: null` tells electron-builder to skip signing rather
+  # than hunt the keychain and fail. Users will see a Gatekeeper warning.
+  #
+  # To sign: remove `identity: null`, set hardenedRuntime true (required for
+  # notarization), and add CSC_LINK / CSC_KEY_PASSWORD / APPLE_ID /
+  # APPLE_APP_SPECIFIC_PASSWORD / APPLE_TEAM_ID as repository secrets.
+  identity: null
   gatekeeperAssess: false
 
 dmg:
