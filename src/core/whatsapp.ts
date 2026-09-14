@@ -2,7 +2,13 @@ import { EventEmitter } from 'node:events';
 import { createHash } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import makeWASocket, {
+import {
+  // NAMED import, not default. Baileys is CommonJS with no real default export:
+  // under real ESM `import makeWASocket from '...'` resolves to the module
+  // namespace OBJECT, and calling it throws "makeWASocket is not a function".
+  // The old server ran under tsx, whose interop hid this; Electron's ESM loader
+  // does not. This is why connecting hung forever with an empty auth/ dir.
+  makeWASocket,
   DisconnectReason,
   downloadMediaMessage,
   isJidGroup,
@@ -136,6 +142,19 @@ export class WhatsAppArchive extends EventEmitter {
     this.stopping = false;
     this.clearRetry();
     this.setStatus({ state: 'connecting', lastError: undefined });
+    try {
+      await this.openSocket();
+    } catch (err) {
+      // Never leave the UI spinning on 'connecting'. Anything thrown here is
+      // reported and retried rather than swallowed.
+      this.connecting = false;
+      this.setStatus({ state: 'closed', lastError: String((err as Error)?.message ?? err) });
+      this.scheduleReconnect();
+      throw err;
+    }
+  }
+
+  private async openSocket(): Promise<void> {
 
     let state, saveCreds, version;
     try {

@@ -43,7 +43,13 @@ function paintConn(c) {
   };
   const [cls, text] = map[c.state] || ['', c.state];
   $('dot').className = 'dot ' + cls;
-  $('connText').textContent = text + (c.capturedThisSession ? ` · ${c.capturedThisSession} captured` : '');
+  // Show why it is not connected. A spinning dot with no explanation is how a
+  // hard failure looked identical to "still working on it".
+  const why = c.lastError && (c.state === 'closed' || c.state === 'logged_out')
+    ? ` — ${String(c.lastError).replace(/^Error:\s*/, '').slice(0, 120)}`
+    : '';
+  $('connText').textContent =
+    text + why + (c.capturedThisSession ? ` · ${c.capturedThisSession} captured` : '');
   $('qr').style.display = c.qrDataUrl ? 'block' : 'none';
   if (c.qrDataUrl) $('qrImg').src = c.qrDataUrl;
 }

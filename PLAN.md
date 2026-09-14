@@ -928,3 +928,53 @@ instantly an installable download.
 `publish:` in `electron-builder.yml` is a **release target, not auto-update**. electron-updater
 stays unwired until there is a signing identity users can trust — an updater that silently
 installs unsigned builds is worse than none.
+
+---
+
+## 18. v0.1.1 — the app could never connect, and five phases of testing missed it
+
+First real-user run. Pressing Connect sat on "connecting" forever with an empty `auth/`.
+
+### 18.1 Root cause: a default import that only works under some runtimes
+
+```
+TypeError: makeWASocket is not a function
+```
+
+Baileys is CommonJS with no real default export. `import makeWASocket from '@whiskeysockets/baileys'`
+resolves to the module **namespace object** under Electron's ESM loader, so calling it throws.
+The original code ran under `tsx`, whose interop produced a callable default — and the dependency
+moved from `^6.7.9` to `6.17.16` along the way.
+
+**Why nothing caught it:**
+
+- `tsc` cannot: Baileys' type declarations *do* declare a default export.
+- Unit tests cannot: they run under **Bun**, where `baileys.default` **is** callable. The
+  interop differs per runtime, and the app's runtime was the one never exercised.
+- The smoke harnesses covered database, IPC, settings, tray and quit — but **never called
+  `connect()`**. Every phase was verified against an empty archive.
+
+That last point is the real lesson. The app's entire purpose is capturing WhatsApp messages, and
+the one path that does it had no test at all. `bun run smoke:connect` now drives a real connect
+and reports where it got to.
+
+### 18.2 Second bug, exposed by the first
+
+`connect()` set `state: 'connecting'` and then threw. Nothing reset the state, so the UI span
+forever with no error while the exception surfaced only in a warnings box the user never looked
+at. Now any throw sets `closed` + `lastError` and schedules a retry, and `paintConn` shows the
+reason next to the status dot. **A hard failure must never look identical to "still working".**
+
+### 18.3 The regression guard is a source check, not a runtime check
+
+`test/baileys-import.test.ts` asserts `src/core/whatsapp.ts` does not default-import Baileys,
+after stripping comments (the naive version matched the file's own warning about the bug). A
+runtime assertion would pass under Bun and still ship the bug — exactly what happened. Verified
+by reintroducing the bug and watching it fail.
+
+### 18.4 Still unverified: an actual WhatsApp link
+
+With the fix, connect reaches the WhatsApp handshake and then closes with code 428
+(`connectionClosed` — transient per Baileys' docs). Reproduced in plain Node with no Electron, so
+it is environmental: almost certainly WSL2's NAT breaking the WebSocket. **Whether a QR renders
+on real hardware is still unproven** — that needs a Windows or macOS run.

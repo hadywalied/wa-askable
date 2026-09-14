@@ -103,7 +103,9 @@ function createWindow(show = true): void {
   // Hooked to did-finish-load, NOT ready-to-show: those are independent Chromium
   // callbacks with no guaranteed ordering, and ready-to-show fires on first
   // non-empty paint, which races the page's own async boot.
-  if (process.env.WA_SMOKE === 'lifecycle') {
+  if (process.env.WA_SMOKE === 'connect') {
+    win.webContents.once('did-finish-load', () => void runConnectTest(win));
+  } else if (process.env.WA_SMOKE === 'lifecycle') {
     win.webContents.once('did-finish-load', () => void runLifecycleTest(win));
   } else if (process.env.WA_SMOKE) {
     win.webContents.once('did-finish-load', () => void runSmokeTest(win));
@@ -136,6 +138,41 @@ function watchNetwork(): void {
  * quitting stops capture and nothing backfills the gap. Asserted here rather
  * than left to a human remembering to click the X.
  */
+/**
+ * Drives an actual WhatsApp connect against whatever build this is running in,
+ * packaged or not, and reports where it got to. Everything before this verified
+ * the app with an empty database; nothing ever exercised Baileys.
+ */
+async function runConnectTest(win: BrowserWindow): Promise<void> {
+  const script = `(async () => {
+    const out = {};
+    await window.wa.openWorkspace('');
+    try {
+      out.connectReturned = JSON.stringify(await window.wa.connect());
+    } catch (e) { out.connectThrew = String(e && e.message || e); }
+    const seen = [];
+    window.wa.onStatus((s) => seen.push(s.state + (s.qrDataUrl ? '(QR!)' : '') + (s.lastError ? ' err=' + String(s.lastError).slice(0,120) : '')));
+    for (let i = 0; i < 40; i++) {
+      await new Promise((r) => setTimeout(r, 500));
+      const st = (await window.wa.getStatus()).connection;
+      if (st.qrDataUrl || st.state === 'open' || st.state === 'logged_out') break;
+    }
+    const fin = (await window.wa.getStatus()).connection;
+    out.finalState = fin.state;
+    out.gotQR = Boolean(fin.qrDataUrl);
+    out.lastError = fin.lastError ? String(fin.lastError).slice(0, 200) : null;
+    out.transitions = seen.join(' -> ');
+    return JSON.stringify(out);
+  })()`;
+  try {
+    console.log('[connect] RESULT', await win.webContents.executeJavaScript(script));
+  } catch (err) {
+    console.error('[connect] HARNESS FAILED', err);
+  }
+  isQuitting = true;
+  app.exit(0);
+}
+
 async function runLifecycleTest(win: BrowserWindow): Promise<void> {
   const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
   const out: Record<string, unknown> = {};
